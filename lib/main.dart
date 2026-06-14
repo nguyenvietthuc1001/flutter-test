@@ -23,7 +23,7 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Game Caro Siêu Cấp',
+      title: 'CARO KING',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(brightness: Brightness.dark, fontFamily: 'Roboto'),
       home: const AuthGate(),
@@ -395,7 +395,7 @@ class CaroGameScreen extends StatefulWidget {
 
 class _CaroGameScreenState extends State<CaroGameScreen>
     with TickerProviderStateMixin {
-  static const int boardSize = 20;
+  int boardSize = 20;
   static const double _cellSize = 44.0;
 
   late List<List<String>> board;
@@ -408,6 +408,11 @@ class _CaroGameScreenState extends State<CaroGameScreen>
   String gameMode = 'PvP'; // 'PvP', 'PvE', 'Online'
   String difficulty = 'Medium';
   bool isAiThinking = false;
+
+  // Tùy chọn quân cờ
+  String playerSymbol = 'X'; 
+  String aiSymbol = 'O';     
+  bool isGameStarted = false;
 
   final TransformationController _tvController = TransformationController();
   double _vpW = 0, _vpH = 0;
@@ -426,8 +431,6 @@ class _CaroGameScreenState extends State<CaroGameScreen>
   AnimationController? _boardExCtrl;
 
   // ── Shockwave (win) ──
-  List<double> _shockwaveRadii = [];   // current radius of each ring
-  List<double> _shockwaveAlphas = [];  // opacity of each ring
   AnimationController? _shockwaveCtrl;
 
   // ── Board shake (win) ──
@@ -440,7 +443,6 @@ class _CaroGameScreenState extends State<CaroGameScreen>
 
   // ── Pending move while rocket is flying ──
   int? _pendingR, _pendingC;
-  String? _pendingPlayer;
 
   final Random _rng = Random();
 
@@ -456,7 +458,6 @@ class _CaroGameScreenState extends State<CaroGameScreen>
   bool _isOnlineWaiting = false;   // waiting for opponent to join
   bool _isOnlineConnecting = false;
   String _onlineError = '';
-  List<List<String>>? _prevRemoteBoard; // to detect which cell changed
 
   // UI controllers for online mode
   final TextEditingController _nicknameCtrl = TextEditingController();
@@ -504,7 +505,7 @@ class _CaroGameScreenState extends State<CaroGameScreen>
       await _cellExplosionPlayer.stop();
       await _cellExplosionPlayer.play(
         AssetSource('sounds/explosion_cell.wav'),
-        volume: 0.72,
+        volume: 0.95,
         mode: PlayerMode.lowLatency,
       );
     } catch (_) {}
@@ -529,6 +530,13 @@ class _CaroGameScreenState extends State<CaroGameScreen>
     winningLine = [];
     lastMoveRow = lastMoveCol = null;
     _clearAllEffects();
+
+    // Nếu chơi PvE và AI là quân X, máy sẽ đi nước đầu tiên
+    if (gameMode == 'PvE' && aiSymbol == 'X') {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _makeAiMove();
+      });
+    }
   }
 
   void _clearAllEffects() {
@@ -536,9 +544,8 @@ class _CaroGameScreenState extends State<CaroGameScreen>
     _cellExCtrl?.dispose(); _cellExCtrl = null; _cellParticles = [];
     _boardExCtrl?.dispose(); _boardExCtrl = null; _boardParticles = [];
     _shockwaveCtrl?.dispose(); _shockwaveCtrl = null;
-    _shockwaveRadii = []; _shockwaveAlphas = [];
     _shakeCtrl?.dispose(); _shakeCtrl = null;
-    _pendingR = _pendingC = null; _pendingPlayer = null;
+    _pendingR = _pendingC = null;
   }
 
   void _resetGame() => setState(() { _initGame(); isAiThinking = false; });
@@ -582,8 +589,8 @@ class _CaroGameScreenState extends State<CaroGameScreen>
     final cx = _vpW / 2, cy = _vpH / 2;
     setState(() {
       _tvController.value = Matrix4.identity()
-        ..translate(cx * (1 - factor) + tx * factor, cy * (1 - factor) + ty * factor)
-        ..scale(ns, ns, 1.0);
+        ..translateByDouble(cx * (1 - factor) + tx * factor, cy * (1 - factor) + ty * factor, 0.0, 1.0)
+        ..scaleByDouble(ns, ns, 1.0, 1.0);
     });
   }
 
@@ -629,7 +636,6 @@ class _CaroGameScreenState extends State<CaroGameScreen>
     _rocketAnim = CurvedAnimation(parent: _rocketCtrl!, curve: Curves.easeIn);
     _rocket = RocketData(player: player, start: start, end: target, angle: angle);
 
-    _rocketCtrl!.addListener(() => setState(() {}));
     _rocketCtrl!.addStatusListener((status) {
       if (status == AnimationStatus.completed) {
         final hitPos = _rocket!.end;
@@ -718,24 +724,6 @@ class _CaroGameScreenState extends State<CaroGameScreen>
     _cellExCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 800));
     _cellParticles = particles;
 
-    _cellExCtrl!.addListener(() {
-      const dt = 0.016;
-      for (final p in _cellParticles) {
-        if (p.life <= 0) continue;
-        p.position += p.velocity * dt;
-        p.velocity = Offset(p.velocity.dx * 0.97, p.velocity.dy * 0.97);
-        if (p.type == BParticleType.debris || p.type == BParticleType.spark) {
-          p.velocity = Offset(p.velocity.dx, p.velocity.dy + 120 * dt);
-        }
-        if (p.type == BParticleType.smoke) {
-          p.size = (p.size + dt * 8).clamp(0, 60);
-          p.velocity = Offset(p.velocity.dx, p.velocity.dy - 5 * dt);
-        }
-        p.life -= p.maxLife / (0.8 / dt);
-        p.rotation += p.rotSpeed * dt;
-      }
-      setState(() {});
-    });
     _cellExCtrl!.addStatusListener((s) {
       if (s == AnimationStatus.completed) setState(() => _cellParticles = []);
     });
@@ -785,47 +773,14 @@ class _CaroGameScreenState extends State<CaroGameScreen>
     _boardExCtrl?.dispose();
     _boardExCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 1400));
     _boardParticles = particles;
-
-    _boardExCtrl!.addListener(() {
-      const dt = 0.016;
-      for (final p in _boardParticles) {
-        if (p.life <= 0) continue;
-        p.position += p.velocity * dt;
-        p.velocity = Offset(p.velocity.dx * 0.98, p.velocity.dy * 0.98);
-        if (p.type == BParticleType.debris || p.type == BParticleType.spark) {
-          p.velocity = Offset(p.velocity.dx, p.velocity.dy + 80 * dt);
-        }
-        if (p.type == BParticleType.smoke) {
-          p.size = (p.size + dt * 12).clamp(0, 80);
-          p.velocity = Offset(p.velocity.dx, p.velocity.dy - 8 * dt);
-        }
-        p.life -= p.maxLife / (1.4 / dt);
-        p.rotation += p.rotSpeed * dt;
-      }
-      setState(() {});
-    });
     _boardExCtrl!.addStatusListener((s) {
       if (s == AnimationStatus.completed) setState(() => _boardParticles = []);
     });
 
     _shockwaveCtrl?.dispose();
     _shockwaveCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 1200));
-    _shockwaveRadii = [0, 0, 0];
-    _shockwaveAlphas = [0.9, 0.7, 0.5];
-
-    _shockwaveCtrl!.addListener(() {
-      final t = _shockwaveCtrl!.value;
-      final maxRadius = max(bW, bH) * 0.85;
-      for (int i = 0; i < 3; i++) {
-        final delay = i * 0.15;
-        final localT = ((t - delay) / (1 - delay)).clamp(0.0, 1.0);
-        _shockwaveRadii[i] = localT * maxRadius;
-        _shockwaveAlphas[i] = (1.0 - localT) * (i == 0 ? 0.9 : i == 1 ? 0.6 : 0.35);
-      }
-      setState(() {});
-    });
     _shockwaveCtrl!.addStatusListener((s) {
-      if (s == AnimationStatus.completed) setState(() { _shockwaveRadii = []; _shockwaveAlphas = []; });
+      if (s == AnimationStatus.completed) setState(() {});
     });
 
     _shakeCtrl?.dispose();
@@ -839,7 +794,6 @@ class _CaroGameScreenState extends State<CaroGameScreen>
       TweenSequenceItem(tween: Tween(begin: 3.0, end: 0.0), weight: 2),
     ]).animate(CurvedAnimation(parent: _shakeCtrl!, curve: Curves.easeInOut));
 
-    _shakeCtrl!.addListener(() => setState(() {}));
     _shakeCtrl!.addStatusListener((s) {
       if (s == AnimationStatus.completed) setState(() {});
     });
@@ -860,7 +814,7 @@ class _CaroGameScreenState extends State<CaroGameScreen>
       if (_matchId == null || _isOnlineWaiting) return;
     }
 
-    _pendingR = r; _pendingC = c; _pendingPlayer = currentPlayer;
+    _pendingR = r; _pendingC = c;
     setState(() {});
     _launchRocket(r, c, currentPlayer);
   }
@@ -868,13 +822,17 @@ class _CaroGameScreenState extends State<CaroGameScreen>
   void _processMove(int r, int c) {
     if (!mounted) return;
     setState(() {
-      _pendingR = _pendingC = null; _pendingPlayer = null;
+      _pendingR = _pendingC = null;
       board[r][c] = currentPlayer;
       lastMoveRow = r; lastMoveCol = c;
 
       if (_checkWin(r, c)) {
         isGameOver = true; winner = currentPlayer;
-        if (currentPlayer == 'X') scoreX++; else scoreO++;
+        if (currentPlayer == 'X') {
+          scoreX++;
+        } else {
+          scoreO++;
+        }
         WidgetsBinding.instance.addPostFrameCallback((_) {
           _triggerWinEffect(winner);
           Future.delayed(const Duration(milliseconds: 900), () {
@@ -891,7 +849,7 @@ class _CaroGameScreenState extends State<CaroGameScreen>
         currentPlayer = currentPlayer == 'X' ? 'O' : 'X';
         if (gameMode == 'Online') {
           _pushOnlineMove(r, c);
-        } else if (gameMode == 'PvE' && currentPlayer == 'O') {
+        } else if (gameMode == 'PvE' && currentPlayer == aiSymbol) {
           _makeAiMove();
         }
       }
@@ -920,9 +878,11 @@ class _CaroGameScreenState extends State<CaroGameScreen>
   }
 
   bool _checkDraw() {
-    for (int r = 0; r < boardSize; r++)
-      for (int c = 0; c < boardSize; c++)
+    for (int r = 0; r < boardSize; r++) {
+      for (int c = 0; c < boardSize; c++) {
         if (board[r][c].isEmpty) return false;
+      }
+    }
     return true;
   }
 
@@ -933,22 +893,28 @@ class _CaroGameScreenState extends State<CaroGameScreen>
       if (!mounted || isGameOver) { setState(() => isAiThinking = false); return; }
       final move = _calcBest();
       setState(() => isAiThinking = false);
-      _pendingR = move[0]; _pendingC = move[1]; _pendingPlayer = 'O';
+      _pendingR = move[0]; _pendingC = move[1];
       setState(() {});
-      _launchRocket(move[0], move[1], 'O');
+      _launchRocket(move[0], move[1], aiSymbol);
     });
   }
 
   List<int> _calcBest() {
     int best = -1;
     List<List<int>> bestMoves = [];
-    for (int r = 0; r < boardSize; r++)
-      for (int c = 0; c < boardSize; c++)
+    for (int r = 0; r < boardSize; r++) {
+      for (int c = 0; c < boardSize; c++) {
         if (board[r][c].isEmpty) {
           final s = _scoreCell(r, c);
-          if (s > best) { best = s; bestMoves = [[r,c]]; }
-          else if (s == best) bestMoves.add([r,c]);
+          if (s > best) {
+            best = s;
+            bestMoves = [[r, c]];
+          } else if (s == best) {
+            bestMoves.add([r, c]);
+          }
         }
+      }
+    }
     if (bestMoves.isEmpty) return [boardSize~/2, boardSize~/2];
     if (difficulty == 'Easy') {
       if (_rng.nextDouble() < 0.4) {
@@ -969,56 +935,84 @@ class _CaroGameScreenState extends State<CaroGameScreen>
 
   List<List<int>> _nearMoves() {
     final c = <List<int>>[];
-    for (int r = 0; r < boardSize; r++)
-      for (int cc = 0; cc < boardSize; cc++)
+    for (int r = 0; r < boardSize; r++) {
+      for (int cc = 0; cc < boardSize; cc++) {
         if (board[r][cc].isEmpty) {
           bool nb = false;
-          outer: for (int dr = -2; dr <= 2; dr++)
+          outer: for (int dr = -2; dr <= 2; dr++) {
             for (int dc = -2; dc <= 2; dc++) {
               final nr = r+dr, nc = cc+dc;
               if (nr>=0&&nr<boardSize&&nc>=0&&nc<boardSize&&board[nr][nc].isNotEmpty) { nb=true; break outer; }
             }
+          }
           if (nb) c.add([r,cc]);
         }
+      }
+    }
     if (c.isEmpty) c.add([boardSize~/2,boardSize~/2]);
     return c;
   }
 
   List<List<int>> _topMoves(int k) {
     final list = <MapEntry<List<int>,int>>[];
-    for (int r = 0; r < boardSize; r++)
-      for (int c = 0; c < boardSize; c++)
-        if (board[r][c].isEmpty) list.add(MapEntry([r,c],_scoreCell(r,c)));
+    for (int r = 0; r < boardSize; r++) {
+      for (int c = 0; c < boardSize; c++) {
+        if (board[r][c].isEmpty) {
+          list.add(MapEntry([r,c],_scoreCell(r,c)));
+        }
+      }
+    }
     list.sort((a,b)=>b.value.compareTo(a.value));
     final res = <List<int>>[];
-    for (int i = 0; i < min(k,list.length); i++) res.add(list[i].key);
+    for (int i = 0; i < min(k,list.length); i++) {
+      res.add(list[i].key);
+    }
     return res.isNotEmpty ? res : [[boardSize~/2,boardSize~/2]];
   }
 
   int _scoreCell(int row, int col) {
-    int atk=0, def=0;
+    int atk = 0, def = 0;
+    final aiSym = aiSymbol;
+    final playSym = playerSymbol;
+
     for (var d in [[0,1],[1,0],[1,1],[1,-1]]) {
-      atk += _evalLine(row,col,d[0],d[1],'O');
-      def += _evalLine(row,col,d[0],d[1],'X');
+      atk += _evalLine(row, col, d[0], d[1], aiSym);
+      def += _evalLine(row, col, d[0], d[1], playSym);
     }
-    if (atk>=100000) return 10000000;
-    if (def>=100000) return 5000000;
-    return atk+(def*1.25).toInt();
+    
+    if (difficulty == 'Asian') {
+      if (atk >= 100000) return 10000000;
+      if (def >= 100000) return 9000000;
+      return atk + (def * 3.0).toInt();
+    } else {
+      if (atk >= 100000) return 10000000;
+      if (def >= 100000) return 5000000;
+      return atk + (def * 1.25).toInt();
+    }
   }
 
   int _evalLine(int row, int col, int dr, int dc, String p) {
-    int cnt=1, open=0;
-    int r=row+dr, c=col+dc;
-    while (r>=0&&r<boardSize&&c>=0&&c<boardSize&&board[r][c]==p) { cnt++; r+=dr; c+=dc; }
-    if (r>=0&&r<boardSize&&c>=0&&c<boardSize&&board[r][c]=='') open++;
-    r=row-dr; c=col-dc;
-    while (r>=0&&r<boardSize&&c>=0&&c<boardSize&&board[r][c]==p) { cnt++; r-=dr; c-=dc; }
-    if (r>=0&&r<boardSize&&c>=0&&c<boardSize&&board[r][c]=='') open++;
-    if (cnt>=5) return 100000;
-    if (cnt==4) return open==2?10000:open==1?1000:0;
-    if (cnt==3) return open==2?1000:open==1?100:0;
-    if (cnt==2) return open==2?100:open==1?10:0;
-    if (cnt==1&&open==2) return 10;
+    int cnt = 1, open = 0;
+    int r = row + dr, c = col + dc;
+    while (r >= 0 && r < boardSize && c >= 0 && c < boardSize && board[r][c] == p) { cnt++; r += dr; c += dc; }
+    if (r >= 0 && r < boardSize && c >= 0 && c < boardSize && board[r][c] == '') open++;
+    r = row - dr; c = col - dc;
+    while (r >= 0 && r < boardSize && c >= 0 && c < boardSize && board[r][c] == p) { cnt++; r -= dr; c -= dc; }
+    if (r >= 0 && r < boardSize && c >= 0 && c < boardSize && board[r][c] == '') open++;
+    
+    if (cnt >= 5) return 100000;
+    
+    if (difficulty == 'Asian') {
+      if (cnt == 4) return open == 2 ? 80000 : open == 1 ? 40000 : 0;
+      if (cnt == 3) return open == 2 ? 30000 : open == 1 ? 1000 : 0;
+      if (cnt == 2) return open == 2 ? 500 : open == 1 ? 50 : 0;
+      if (cnt == 1 && open == 2) return 20;
+    } else {
+      if (cnt == 4) return open == 2 ? 10000 : open == 1 ? 1000 : 0;
+      if (cnt == 3) return open == 2 ? 1000 : open == 1 ? 100 : 0;
+      if (cnt == 2) return open == 2 ? 100 : open == 1 ? 10 : 0;
+      if (cnt == 1 && open == 2) return 10;
+    }
     return 0;
   }
 
@@ -1052,7 +1046,8 @@ class _CaroGameScreenState extends State<CaroGameScreen>
       final code = _generateRoomCode();
       final response = await supabase.from('matches').insert({
         'room_code': code,
-        'player_x': nick,
+        'player_x': playerSymbol == 'X' ? nick : null,
+        'player_o': playerSymbol == 'O' ? nick : null,
         'board': _boardToJson(_emptyBoard()),
         'current_player': 'X',
         'status': 'waiting',
@@ -1061,13 +1056,14 @@ class _CaroGameScreenState extends State<CaroGameScreen>
       setState(() {
         _matchId = response['id'] as String;
         _roomCode = code;
-        _mySymbol = 'X';
+        _mySymbol = playerSymbol;
         _myNickname = nick;
         _opponentNickname = '';
         _isOnlineWaiting = true;
         _isOnlineConnecting = false;
         _showOnlinePanel = false;
         gameMode = 'Online';
+        isGameStarted = true;
         _initGame();
       });
       _subscribeToMatch(_matchId!);
@@ -1110,9 +1106,15 @@ class _CaroGameScreenState extends State<CaroGameScreen>
 
       final row = rows.first;
       final matchId = row['id'] as String;
+      final creatorIsX = row['player_x'] != null;
+
+      final mySym = creatorIsX ? 'O' : 'X';
+      final oppName = creatorIsX 
+          ? (row['player_x'] as String? ?? '') 
+          : (row['player_o'] as String? ?? '');
 
       await supabase.from('matches').update({
-        'player_o': nick,
+        creatorIsX ? 'player_o' : 'player_x': nick,
         'status': 'playing',
         'updated_at': DateTime.now().toUtc().toIso8601String(),
       }).eq('id', matchId);
@@ -1122,13 +1124,14 @@ class _CaroGameScreenState extends State<CaroGameScreen>
       setState(() {
         _matchId = matchId;
         _roomCode = code;
-        _mySymbol = 'O';
+        _mySymbol = mySym;
         _myNickname = nick;
-        _opponentNickname = updated['player_x'] as String? ?? '';
+        _opponentNickname = oppName;
         _isOnlineWaiting = false;
         _isOnlineConnecting = false;
         _showOnlinePanel = false;
         gameMode = 'Online';
+        isGameStarted = true;
         _initGame();
         board = _boardFromJson(updated['board'] as List);
         currentPlayer = updated['current_player'] as String? ?? 'X';
@@ -1177,9 +1180,15 @@ class _CaroGameScreenState extends State<CaroGameScreen>
     final playerO = data['player_o'] as String?;
 
     // Update opponent name when they join
+    final playerX = data['player_x'] as String?;
     if (_mySymbol == 'X' && playerO != null && _opponentNickname.isEmpty) {
       setState(() {
         _opponentNickname = playerO;
+        _isOnlineWaiting = false;
+      });
+    } else if (_mySymbol == 'O' && playerX != null && _opponentNickname.isEmpty) {
+      setState(() {
+        _opponentNickname = playerX;
         _isOnlineWaiting = false;
       });
     }
@@ -1204,13 +1213,16 @@ class _CaroGameScreenState extends State<CaroGameScreen>
             if (newWinner != 'Draw' && newWinLine != null) {
               winningLine = newWinLine.map<List<int>>((e) => (e as List).map<int>((v) => v as int).toList()).toList();
             }
-            if (newWinner == 'X') scoreX++;
-            else if (newWinner == 'O') scoreO++;
+            if (newWinner == 'X') {
+              scoreX++;
+            } else if (newWinner == 'O') {
+              scoreO++;
+            }
           }
         });
 
         // Trigger rocket + explosion animation for opponent's move
-        _pendingR = remoteLastRow; _pendingC = remoteLastCol; _pendingPlayer = mover;
+        _pendingR = remoteLastRow; _pendingC = remoteLastCol;
         setState(() {});
         _launchRocketAnimOnly(remoteLastRow, remoteLastCol, mover);
 
@@ -1273,14 +1285,12 @@ class _CaroGameScreenState extends State<CaroGameScreen>
     _rocketAnim = CurvedAnimation(parent: _rocketCtrl!, curve: Curves.easeIn);
     _rocket = RocketData(player: player, start: start, end: target, angle: angle);
 
-    _rocketCtrl!.addListener(() => setState(() {}));
     _rocketCtrl!.addStatusListener((status) {
       if (status == AnimationStatus.completed) {
         final hitPos = _rocket!.end;
         setState(() {
           _rocket = null;
           _pendingR = _pendingC = null;
-          _pendingPlayer = null;
         });
         _triggerCellExplosion(hitPos, player);
       }
@@ -1301,8 +1311,8 @@ class _CaroGameScreenState extends State<CaroGameScreen>
         'last_move_row': r,
         'last_move_col': c,
         'status': isGameOver ? 'finished' : 'playing',
-        if (winnerVal != null) 'winner': winnerVal,
-        if (winLineVal != null) 'winning_line': winLineVal,
+        'winner': ?winnerVal,
+        'winning_line': ?winLineVal,
         'updated_at': DateTime.now().toUtc().toIso8601String(),
       }).eq('id', _matchId!);
     } catch (e) {
@@ -1372,10 +1382,10 @@ class _CaroGameScreenState extends State<CaroGameScreen>
             padding: const EdgeInsets.all(32),
             margin: const EdgeInsets.symmetric(horizontal: 24),
             decoration: BoxDecoration(
-              color: const Color(0xFF1E1A3A).withOpacity(0.92),
+              color: const Color(0xFF1E1A3A).withValues(alpha: 0.92),
               borderRadius: BorderRadius.circular(24),
-              border: Border.all(color: Colors.white.withOpacity(0.15), width: 1.5),
-              boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.5), blurRadius: 25, offset: const Offset(0,10))],
+              border: Border.all(color: Colors.white.withValues(alpha: 0.15), width: 1.5),
+              boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.5), blurRadius: 25, offset: const Offset(0,10))],
             ),
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -1398,7 +1408,7 @@ class _CaroGameScreenState extends State<CaroGameScreen>
                       ? (displayResult == 'WIN' ? 'Bạn đã thắng! Xuất sắc!' : 'Đối thủ thắng lần này. Cố lên!')
                       : 'Người chơi [ $result ] đã thắng với 5 ô liên tiếp! 💥',
                   textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 15, color: Colors.white.withOpacity(0.7), height: 1.4),
+                  style: TextStyle(fontSize: 15, color: Colors.white.withValues(alpha: 0.7), height: 1.4),
                 ),
                 const SizedBox(height: 28),
                 Row(
@@ -1427,7 +1437,7 @@ class _CaroGameScreenState extends State<CaroGameScreen>
                         icon: const Icon(Icons.exit_to_app, color: Colors.white70),
                         label: const Text('THOÁT', style: TextStyle(fontSize: 14, color: Colors.white70)),
                         style: OutlinedButton.styleFrom(
-                          side: BorderSide(color: Colors.white.withOpacity(0.2)),
+                          side: BorderSide(color: Colors.white.withValues(alpha: 0.2)),
                           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                         ),
@@ -1470,10 +1480,10 @@ class _CaroGameScreenState extends State<CaroGameScreen>
         duration: const Duration(milliseconds: 200),
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
         decoration: BoxDecoration(
-          color: sel ? (mode == 'Online' ? const Color(0xFF00C896).withOpacity(0.2) : const Color(0xFF6C63FF).withOpacity(0.2)) : Colors.transparent,
+          color: sel ? (mode == 'Online' ? const Color(0xFF00C896).withValues(alpha: 0.2) : const Color(0xFF6C63FF).withValues(alpha: 0.2)) : Colors.transparent,
           borderRadius: BorderRadius.circular(10),
           border: Border.all(
-            color: sel ? (mode == 'Online' ? const Color(0xFF00C896) : const Color(0xFF6C63FF)) : Colors.white.withOpacity(0.1),
+            color: sel ? (mode == 'Online' ? const Color(0xFF00C896) : const Color(0xFF6C63FF)) : Colors.white.withValues(alpha: 0.1),
             width: 1.2,
           ),
         ),
@@ -1490,9 +1500,9 @@ class _CaroGameScreenState extends State<CaroGameScreen>
         duration: const Duration(milliseconds: 200),
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
         decoration: BoxDecoration(
-          color: sel?color.withOpacity(0.2):Colors.transparent,
+          color: sel?color.withValues(alpha: 0.2):Colors.transparent,
           borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: sel?color:Colors.white.withOpacity(0.08)),
+          border: Border.all(color: sel?color:Colors.white.withValues(alpha: 0.08)),
         ),
         child: Text(label, style: TextStyle(color: sel?Colors.white:Colors.white60, fontSize: 11, fontWeight: sel?FontWeight.bold:FontWeight.normal)),
       ),
@@ -1506,10 +1516,10 @@ class _CaroGameScreenState extends State<CaroGameScreen>
       duration: const Duration(milliseconds: 300),
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
       decoration: BoxDecoration(
-        color: isActive?pc.withOpacity(0.12):Colors.white.withOpacity(0.02),
+        color: isActive?pc.withValues(alpha: 0.12):Colors.white.withValues(alpha: 0.02),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: isActive?pc:Colors.white.withOpacity(0.08), width: isActive?1.5:1.0),
-        boxShadow: isActive?[BoxShadow(color: pc.withOpacity(0.3), blurRadius: 6, spreadRadius: 0.5)]:null,
+        border: Border.all(color: isActive?pc:Colors.white.withValues(alpha: 0.08), width: isActive?1.5:1.0),
+        boxShadow: isActive?[BoxShadow(color: pc.withValues(alpha: 0.3), blurRadius: 6, spreadRadius: 0.5)]:null,
       ),
       child: Column(mainAxisSize: MainAxisSize.min, children: [
         Row(mainAxisSize: MainAxisSize.min, children: [
@@ -1544,12 +1554,12 @@ class _CaroGameScreenState extends State<CaroGameScreen>
           padding: const EdgeInsets.all(28),
           constraints: const BoxConstraints(maxWidth: 420),
           decoration: BoxDecoration(
-            color: const Color(0xFF0F0C24).withOpacity(0.95),
+            color: const Color(0xFF0F0C24).withValues(alpha: 0.95),
             borderRadius: BorderRadius.circular(24),
-            border: Border.all(color: const Color(0xFF00C896).withOpacity(0.4), width: 1.5),
+            border: Border.all(color: const Color(0xFF00C896).withValues(alpha: 0.4), width: 1.5),
             boxShadow: [
-              BoxShadow(color: const Color(0xFF00C896).withOpacity(0.1), blurRadius: 30, spreadRadius: 2),
-              BoxShadow(color: Colors.black.withOpacity(0.6), blurRadius: 20),
+              BoxShadow(color: const Color(0xFF00C896).withValues(alpha: 0.1), blurRadius: 30, spreadRadius: 2),
+              BoxShadow(color: Colors.black.withValues(alpha: 0.6), blurRadius: 20),
             ],
           ),
           child: Column(
@@ -1566,7 +1576,7 @@ class _CaroGameScreenState extends State<CaroGameScreen>
                   child: Container(
                     padding: const EdgeInsets.all(6),
                     decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.05),
+                      color: Colors.white.withValues(alpha: 0.05),
                       borderRadius: BorderRadius.circular(8),
                     ),
                     child: const Icon(Icons.close, color: Colors.white54, size: 18),
@@ -1581,16 +1591,16 @@ class _CaroGameScreenState extends State<CaroGameScreen>
                 style: const TextStyle(color: Colors.white),
                 decoration: InputDecoration(
                   hintText: 'Nhập tên hiển thị...',
-                  hintStyle: TextStyle(color: Colors.white.withOpacity(0.3)),
+                  hintStyle: TextStyle(color: Colors.white.withValues(alpha: 0.3)),
                   filled: true,
-                  fillColor: Colors.white.withOpacity(0.06),
+                  fillColor: Colors.white.withValues(alpha: 0.06),
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide(color: Colors.white.withOpacity(0.1)),
+                    borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.1)),
                   ),
                   enabledBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide(color: Colors.white.withOpacity(0.1)),
+                    borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.1)),
                   ),
                   focusedBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(12),
@@ -1602,7 +1612,7 @@ class _CaroGameScreenState extends State<CaroGameScreen>
               ),
               const SizedBox(height: 20),
               Text(
-                'Tao phong: ban la X. Vao phong: ban la O. X di truoc.',
+                'Tạo phòng: bạn nhận quân cờ đã chọn ở Cài đặt. Vào phòng: bạn nhận quân cờ còn lại.',
                 style: TextStyle(color: Colors.white.withValues(alpha: 0.58), fontSize: 12, height: 1.35),
               ),
               const SizedBox(height: 12),
@@ -1626,12 +1636,12 @@ class _CaroGameScreenState extends State<CaroGameScreen>
 
               const SizedBox(height: 16),
               Row(children: [
-                Expanded(child: Divider(color: Colors.white.withOpacity(0.1))),
+                Expanded(child: Divider(color: Colors.white.withValues(alpha: 0.1))),
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 12),
-                  child: Text('hoặc', style: TextStyle(color: Colors.white.withOpacity(0.4), fontSize: 12)),
+                  child: Text('hoặc', style: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 12)),
                 ),
-                Expanded(child: Divider(color: Colors.white.withOpacity(0.1))),
+                Expanded(child: Divider(color: Colors.white.withValues(alpha: 0.1))),
               ]),
               const SizedBox(height: 16),
 
@@ -1646,16 +1656,16 @@ class _CaroGameScreenState extends State<CaroGameScreen>
                     textCapitalization: TextCapitalization.characters,
                     decoration: InputDecoration(
                       hintText: 'XXXXXX',
-                      hintStyle: TextStyle(color: Colors.white.withOpacity(0.2), letterSpacing: 3),
+                      hintStyle: TextStyle(color: Colors.white.withValues(alpha: 0.2), letterSpacing: 3),
                       filled: true,
-                      fillColor: Colors.white.withOpacity(0.06),
+                      fillColor: Colors.white.withValues(alpha: 0.06),
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(12),
-                        borderSide: BorderSide(color: Colors.white.withOpacity(0.1)),
+                        borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.1)),
                       ),
                       enabledBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(12),
-                        borderSide: BorderSide(color: Colors.white.withOpacity(0.1)),
+                        borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.1)),
                       ),
                       focusedBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(12),
@@ -1684,9 +1694,9 @@ class _CaroGameScreenState extends State<CaroGameScreen>
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   decoration: BoxDecoration(
-                    color: const Color(0xFFFF2D55).withOpacity(0.1),
+                    color: const Color(0xFFFF2D55).withValues(alpha: 0.1),
                     borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: const Color(0xFFFF2D55).withOpacity(0.3)),
+                    border: Border.all(color: const Color(0xFFFF2D55).withValues(alpha: 0.3)),
                   ),
                   child: Row(children: [
                     const Icon(Icons.error_outline, color: Color(0xFFFF2D55), size: 16),
@@ -1710,10 +1720,10 @@ class _CaroGameScreenState extends State<CaroGameScreen>
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
           decoration: BoxDecoration(
-            color: const Color(0xFF0F0C24).withOpacity(0.9),
+            color: const Color(0xFF0F0C24).withValues(alpha: 0.9),
             borderRadius: BorderRadius.circular(40),
-            border: Border.all(color: const Color(0xFF00C896).withOpacity(0.5)),
-            boxShadow: [BoxShadow(color: const Color(0xFF00C896).withOpacity(0.15), blurRadius: 20)],
+            border: Border.all(color: const Color(0xFF00C896).withValues(alpha: 0.5)),
+            boxShadow: [BoxShadow(color: const Color(0xFF00C896).withValues(alpha: 0.15), blurRadius: 20)],
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
@@ -1728,7 +1738,7 @@ class _CaroGameScreenState extends State<CaroGameScreen>
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text('Mã phòng: $_roomCode', style: const TextStyle(color: Color(0xFF00C896), fontWeight: FontWeight.bold, fontSize: 16, letterSpacing: 2)),
-                  Text('Đang chờ đối thủ tham gia...', style: TextStyle(color: Colors.white.withOpacity(0.6), fontSize: 12)),
+                  Text('Đang chờ đối thủ tham gia...', style: TextStyle(color: Colors.white.withValues(alpha: 0.6), fontSize: 12)),
                 ],
               ),
             ],
@@ -1749,9 +1759,9 @@ class _CaroGameScreenState extends State<CaroGameScreen>
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: BoxDecoration(
-        color: const Color(0xFF00C896).withOpacity(0.08),
+        color: const Color(0xFF00C896).withValues(alpha: 0.08),
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: const Color(0xFF00C896).withOpacity(0.2)),
+        border: Border.all(color: const Color(0xFF00C896).withValues(alpha: 0.2)),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -1761,7 +1771,7 @@ class _CaroGameScreenState extends State<CaroGameScreen>
           Text('Phòng: $_roomCode ', style: const TextStyle(color: Color(0xFF00C896), fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1)),
           const SizedBox(width: 4),
           Text(
-            '${isMyTurn ? "⚡ Lượt bạn" : "⏳ Chờ..."}',
+            isMyTurn ? "⚡ Lượt bạn" : "⏳ Chờ...",
             style: TextStyle(color: isMyTurn ? Colors.white : Colors.white38, fontSize: 11, fontWeight: FontWeight.bold),
           ),
           const SizedBox(width: 8),
@@ -1777,10 +1787,344 @@ class _CaroGameScreenState extends State<CaroGameScreen>
     );
   }
 
+  // ══════════════════════════════════════════════════════════
+  //  SETUP SCREEN (MÀN HÌNH CẤU HÌNH TRẬN ĐẤU)
+  // ══════════════════════════════════════════════════════════
+
+  // Hàm xây dựng màn hình Setup tùy chỉnh trước khi bắt đầu game
+  Widget _buildSetupScreen() {
+    return Scaffold(
+      body: Container(
+        // Hiệu ứng Gradient động mượt mà làm nền background cho game
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft, end: Alignment.bottomRight,
+            colors: [Color(0xFF0F0C20), Color(0xFF15102A), Color(0xFF06040A)],
+          ),
+        ),
+        child: SafeArea(
+          child: Center(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(24),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 500),
+                // Thẻ Card thiết kế dạng kính mờ (Glassmorphism) cực kỳ Premium
+                child: Card(
+                  color: const Color(0xFF17132E).withValues(alpha: 0.92),
+                  elevation: 24,
+                  shadowColor: Colors.black.withValues(alpha: 0.6),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(24),
+                    side: BorderSide(color: Colors.white.withValues(alpha: 0.08)), // Viền sáng nhẹ tạo cảm giác nổi khối
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.all(28),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        // Logo game Caro King với hiệu ứng ánh sáng Neon tỏa bóng
+                        const Center(
+                          child: Text(
+                            'CARO KING',
+                            style: TextStyle(
+                              fontSize: 40,
+                              fontWeight: FontWeight.w900,
+                              color: Colors.white,
+                              letterSpacing: 4,
+                              shadows: [
+                                Shadow(color: Color(0xFF00E5FF), blurRadius: 12),
+                                Shadow(color: Colors.indigoAccent, blurRadius: 20),
+                              ],
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        Center(
+                          child: Text(
+                            'CẤU HÌNH TRẬN ĐẤU',
+                            style: TextStyle(
+                              color: Colors.white.withValues(alpha: 0.5),
+                              fontSize: 11,
+                              fontWeight: FontWeight.w900,
+                              letterSpacing: 2,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 28),
+
+                        // Phần 1: Lựa chọn Chế độ chơi
+                        _buildSectionTitle('CHẾ ĐỘ CHƠI'),
+                        const SizedBox(height: 10),
+                        Row(
+                          children: [
+                            Expanded(child: _buildModeSelectorCard('PvP', '👥', '2 Người')),
+                            const SizedBox(width: 10),
+                            Expanded(child: _buildModeSelectorCard('PvE', '🤖', 'Với Máy')),
+                            const SizedBox(width: 10),
+                            Expanded(child: _buildModeSelectorCard('Online', '🌐', 'Online')),
+                          ],
+                        ),
+                        const SizedBox(height: 22),
+
+                        // Phần 2: Kích thước bản đồ (Từ 20x20 đến 50x50)
+                        _buildSectionTitle('KÍCH THƯỚC BẢN ĐỒ'),
+                        const SizedBox(height: 8),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              'Số ô: ${boardSize}x$boardSize',
+                              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                            ),
+                            Text(
+                              '(${boardSize * boardSize} ô cờ)',
+                              style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 12),
+                            ),
+                          ],
+                        ),
+                        SliderTheme(
+                          data: SliderTheme.of(context).copyWith(
+                            activeTrackColor: const Color(0xFF6C63FF),
+                            inactiveTrackColor: Colors.white.withValues(alpha: 0.08),
+                            thumbColor: const Color(0xFF00E5FF),
+                            overlayColor: const Color(0xFF00E5FF).withValues(alpha: 0.15),
+                            valueIndicatorColor: const Color(0xFF6C63FF),
+                            valueIndicatorTextStyle: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                          ),
+                          child: Slider(
+                            value: boardSize.toDouble(),
+                            min: 20,
+                            max: 50,
+                            divisions: 30,
+                            label: '${boardSize}x$boardSize',
+                            onChanged: (val) {
+                              setState(() {
+                                boardSize = val.toInt();
+                              });
+                            },
+                          ),
+                        ),
+                        const SizedBox(height: 14),
+
+                        // Phần 3: Lựa chọn Quân cờ (Chỉ hiển thị cho Máy hoặc Online)
+                        if (gameMode == 'PvE' || gameMode == 'Online') ...[
+                          _buildSectionTitle('CHỌN BÊN CỦA BẠN'),
+                          const SizedBox(height: 10),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: _buildSymbolSelectorCard('X', const Color(0xFF00E5FF)),
+                              ),
+                              const SizedBox(width: 16),
+                              Expanded(
+                                child: _buildSymbolSelectorCard('O', const Color(0xFFFF2D55)),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 22),
+                        ],
+
+                        // Phần 4: Độ khó máy (Chỉ hiển thị cho Máy - PvE)
+                        if (gameMode == 'PvE') ...[
+                          _buildSectionTitle('ĐỘ KHÓ CỦA MÁY'),
+                          const SizedBox(height: 10),
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            alignment: WrapAlignment.center,
+                            children: [
+                              _buildDifficultyBadgeWidget('Easy', 'Dễ', Colors.green),
+                              _buildDifficultyBadgeWidget('Medium', 'Vừa', Colors.orange),
+                              _buildDifficultyBadgeWidget('Hard', 'Khó', Colors.redAccent),
+                              _buildDifficultyBadgeWidget('Asian', 'Châu Á 👑', const Color(0xFFFF2D55)),
+                            ],
+                          ),
+                          const SizedBox(height: 24),
+                        ],
+
+                        // Nút hành động Bắt đầu / Mở Online panel
+                        const SizedBox(height: 8),
+                        ElevatedButton(
+                          onPressed: () {
+                            if (gameMode == 'Online') {
+                              setState(() {
+                                _showOnlinePanel = true;
+                              });
+                            } else {
+                              setState(() {
+                                aiSymbol = playerSymbol == 'X' ? 'O' : 'X';
+                                isGameStarted = true;
+                                _initGame();
+                              });
+                            }
+                          },
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF6C63FF),
+                            padding: const EdgeInsets.symmetric(vertical: 16),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                            shadowColor: const Color(0xFF6C63FF).withValues(alpha: 0.4),
+                            elevation: 8,
+                          ),
+                          child: Text(
+                            gameMode == 'Online' ? 'MỞ PHÒNG ONLINE' : 'BẮT ĐẦU TRẬN ĐẤU',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                              letterSpacing: 1.5,
+                            ),
+                          ),
+                        ),
+                        
+                        const SizedBox(height: 16),
+                        TextButton.icon(
+                          onPressed: _signOut,
+                          icon: const Icon(Icons.logout, size: 16, color: Colors.white38),
+                          label: const Text('Đăng xuất tài khoản', style: TextStyle(color: Colors.white38, fontSize: 12)),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSectionTitle(String title) {
+    return Text(
+      title,
+      style: TextStyle(
+        color: Colors.white.withValues(alpha: 0.6),
+        fontSize: 11,
+        fontWeight: FontWeight.bold,
+        letterSpacing: 1.5,
+      ),
+    );
+  }
+
+  Widget _buildModeSelectorCard(String mode, String emoji, String label) {
+    final isSelected = gameMode == mode;
+    final themeColor = mode == 'Online' ? const Color(0xFF00C896) : const Color(0xFF6C63FF);
+    return GestureDetector(
+      onTap: () {
+        setState(() {
+          gameMode = mode;
+        });
+      },
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.symmetric(vertical: 14),
+        decoration: BoxDecoration(
+          color: isSelected ? themeColor.withValues(alpha: 0.12) : Colors.white.withValues(alpha: 0.02),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: isSelected ? themeColor : Colors.white.withValues(alpha: 0.08),
+            width: isSelected ? 2 : 1,
+          ),
+          boxShadow: isSelected
+              ? [BoxShadow(color: themeColor.withValues(alpha: 0.2), blurRadius: 8, offset: const Offset(0, 3))]
+              : null,
+        ),
+        child: Column(
+          children: [
+            Text(emoji, style: const TextStyle(fontSize: 26)),
+            const SizedBox(height: 6),
+            Text(
+              label,
+              style: TextStyle(
+                color: isSelected ? Colors.white : Colors.white70,
+                fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                fontSize: 12,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSymbolSelectorCard(String sym, Color color) {
+    final isSelected = playerSymbol == sym;
+    return GestureDetector(
+      onTap: () {
+        setState(() {
+          playerSymbol = sym;
+        });
+      },
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.symmetric(vertical: 12),
+        decoration: BoxDecoration(
+          color: isSelected ? color.withValues(alpha: 0.1) : Colors.white.withValues(alpha: 0.02),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: isSelected ? color : Colors.white.withValues(alpha: 0.08),
+            width: isSelected ? 2.5 : 1,
+          ),
+          boxShadow: isSelected
+              ? [BoxShadow(color: color.withValues(alpha: 0.15), blurRadius: 6)]
+              : null,
+        ),
+        child: Center(
+          child: Text(
+            sym,
+            style: TextStyle(
+              color: color,
+              fontSize: 24,
+              fontWeight: FontWeight.w900,
+              shadows: isSelected ? [Shadow(color: color, blurRadius: 6)] : null,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDifficultyBadgeWidget(String diff, String label, Color color) {
+    final isSelected = difficulty == diff;
+    return GestureDetector(
+      onTap: () {
+        setState(() {
+          difficulty = diff;
+        });
+      },
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: isSelected ? color.withValues(alpha: 0.15) : Colors.white.withValues(alpha: 0.01),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: isSelected ? color : Colors.white.withValues(alpha: 0.08),
+            width: isSelected ? 1.5 : 1,
+          ),
+          boxShadow: isSelected && diff == 'Asian'
+              ? [const BoxShadow(color: Colors.redAccent, blurRadius: 8)]
+              : null,
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: isSelected ? Colors.white : Colors.white60,
+            fontSize: 11,
+            fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+          ),
+        ),
+      ),
+    );
+  }
+
   // ── BUILD ─────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
-    final shakeX = (_shakeAnim?.value ?? 0.0);
+    if (!isGameStarted) {
+      return _buildSetupScreen();
+    }
 
     return Scaffold(
       body: Container(
@@ -1796,14 +2140,21 @@ class _CaroGameScreenState extends State<CaroGameScreen>
             // Board area
             Positioned.fill(
               child: Center(
-                child: Transform.translate(
-                  offset: Offset(shakeX, 0),
+                child: AnimatedBuilder(
+                  animation: _shakeAnim ?? const AlwaysStoppedAnimation(0.0),
+                  builder: (context, child) {
+                    final shakeX = _shakeAnim?.value ?? 0.0;
+                    return Transform.translate(
+                      offset: Offset(shakeX, 0),
+                      child: child,
+                    );
+                  },
                   child: Container(
                     margin: const EdgeInsets.all(4),
                     decoration: BoxDecoration(
                       borderRadius: BorderRadius.circular(20),
-                      border: Border.all(color: Colors.white.withOpacity(0.1), width: 2),
-                      boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.4), blurRadius: 20, offset: const Offset(0,10))],
+                      border: Border.all(color: Colors.white.withValues(alpha: 0.1), width: 2),
+                      boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.4), blurRadius: 20, offset: const Offset(0,10))],
                     ),
                     child: ClipRRect(
                       borderRadius: BorderRadius.circular(18),
@@ -1852,33 +2203,39 @@ class _CaroGameScreenState extends State<CaroGameScreen>
                                   ),
 
                                   // Shockwave rings
-                                  if (_shockwaveRadii.isNotEmpty)
+                                  if (_shockwaveCtrl != null)
                                     Positioned.fill(
                                       child: IgnorePointer(
-                                        child: CustomPaint(
-                                          painter: ShockwavePainter(
-                                            center: Offset(boardSize*_cellSize/2, boardSize*_cellSize/2),
-                                            radii: _shockwaveRadii,
-                                            alphas: _shockwaveAlphas,
-                                            color: winner=='X'?const Color(0xFF00E5FF):const Color(0xFFFF2D55),
-                                          ),
+                                        child: ShockwaveOverlay(
+                                          animation: _shockwaveCtrl!,
+                                          winner: winner,
+                                          boardWidth: boardSize * _cellSize,
+                                          boardHeight: boardSize * _cellSize,
                                         ),
                                       ),
                                     ),
 
                                   // Cell explosion particles
-                                  if (_cellParticles.isNotEmpty)
+                                  if (_cellParticles.isNotEmpty && _cellExCtrl != null)
                                     Positioned.fill(
                                       child: IgnorePointer(
-                                        child: CustomPaint(painter: BombParticlePainter(_cellParticles)),
+                                        child: ParticlesOverlay(
+                                          controller: _cellExCtrl!,
+                                          particles: _cellParticles,
+                                          isBoardExplosion: false,
+                                        ),
                                       ),
                                     ),
 
                                   // Board explosion particles (win)
-                                  if (_boardParticles.isNotEmpty)
+                                  if (_boardParticles.isNotEmpty && _boardExCtrl != null)
                                     Positioned.fill(
                                       child: IgnorePointer(
-                                        child: CustomPaint(painter: BombParticlePainter(_boardParticles)),
+                                        child: ParticlesOverlay(
+                                          controller: _boardExCtrl!,
+                                          particles: _boardParticles,
+                                          isBoardExplosion: true,
+                                        ),
                                       ),
                                     ),
 
@@ -1886,20 +2243,9 @@ class _CaroGameScreenState extends State<CaroGameScreen>
                                   if (_rocket != null && _rocketAnim != null)
                                     Positioned.fill(
                                       child: IgnorePointer(
-                                        child: AnimatedBuilder(
-                                          animation: _rocketAnim!,
-                                          builder: (_, __) {
-                                            final t = _rocketAnim!.value;
-                                            final pos = Offset.lerp(_rocket!.start, _rocket!.end, t)!;
-                                            return CustomPaint(
-                                              painter: RocketPainter(
-                                                position: pos,
-                                                angle: _rocket!.angle,
-                                                player: _rocket!.player,
-                                                progress: t,
-                                              ),
-                                            );
-                                          },
+                                        child: RocketOverlay(
+                                          rocket: _rocket,
+                                          animation: _rocketAnim,
                                         ),
                                       ),
                                     ),
@@ -1927,10 +2273,10 @@ class _CaroGameScreenState extends State<CaroGameScreen>
                   child: Container(
                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                     decoration: BoxDecoration(
-                      color: const Color(0xFF0F0C20).withOpacity(0.78),
+                      color: const Color(0xFF0F0C20).withValues(alpha: 0.78),
                       borderRadius: BorderRadius.circular(14),
-                      border: Border.all(color: Colors.white.withOpacity(0.08)),
-                      boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.35), blurRadius: 16, offset: const Offset(0, 8))],
+                      border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+                      boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.35), blurRadius: 16, offset: const Offset(0, 8))],
                     ),
                     child: Wrap(
                       alignment: WrapAlignment.center,
@@ -1939,11 +2285,11 @@ class _CaroGameScreenState extends State<CaroGameScreen>
                       runSpacing: 8,
                       children: [
                         Column(mainAxisSize: MainAxisSize.min, children: [
-                          const Text('CARO NEON', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900,
+                          const Text('CARO KING', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900,
                               color: Colors.white, letterSpacing: 2,
-                              shadows: [Shadow(color: Colors.indigoAccent, blurRadius: 12)])),
-                          Text('BẢN ĐỒ LỚN 20x20',
-                              style: TextStyle(fontSize: 9, color: Colors.white.withOpacity(0.5), letterSpacing: 1.4)),
+                              shadows: [Shadow(color: Color(0xFF00E5FF), blurRadius: 12)])),
+                          Text('BẢN ĐỒ LỚN ${boardSize}x$boardSize',
+                              style: TextStyle(fontSize: 9, color: Colors.white.withValues(alpha: 0.5), letterSpacing: 1.4)),
                         ]),
                         Container(width: 1, height: 36, color: Colors.white12),
                         Row(mainAxisSize: MainAxisSize.min, children: [
@@ -1964,6 +2310,8 @@ class _CaroGameScreenState extends State<CaroGameScreen>
                             _diffBtn('Medium','T.Bình',Colors.orange),
                             const SizedBox(width: 6),
                             _diffBtn('Hard','Khó',Colors.redAccent),
+                            const SizedBox(width: 6),
+                            _diffBtn('Asian','Châu Á',const Color(0xFFFF9100)),
                           ]),
                         if (gameMode == 'Online' && !_isOnlineWaiting)
                           _buildOnlineStatusBar(),
@@ -1978,9 +2326,9 @@ class _CaroGameScreenState extends State<CaroGameScreen>
                         Container(
                           padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                           decoration: BoxDecoration(
-                            color: Colors.white.withOpacity(0.03),
+                            color: Colors.white.withValues(alpha: 0.03),
                             borderRadius: BorderRadius.circular(30),
-                            border: Border.all(color: Colors.white.withOpacity(0.05)),
+                            border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
                           ),
                           child: Row(mainAxisSize: MainAxisSize.min, children: [
                             IconButton(icon: const Icon(Icons.zoom_out, color: Colors.white70), onPressed: () => _zoom(1/1.25), tooltip: 'Thu nhỏ'),
@@ -2044,18 +2392,34 @@ class _CaroGameScreenState extends State<CaroGameScreen>
               child: Column(mainAxisSize: MainAxisSize.min, children: [
                 Text(
                   'Con lăn chuột: kéo bàn cờ  •  Nút bấm: thu phóng',
-                  style: TextStyle(fontSize: 11, color: Colors.white.withOpacity(0.45), fontStyle: FontStyle.italic),
+                  style: TextStyle(fontSize: 11, color: Colors.white.withValues(alpha: 0.45), fontStyle: FontStyle.italic),
                 ),
                 const SizedBox(height: 8),
                 Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                  ElevatedButton.icon(
+                    onPressed: () {
+                      _leaveOnlineMatch();
+                      setState(() {
+                        isGameStarted = false;
+                      });
+                    },
+                    icon: const Icon(Icons.settings, color: Colors.white),
+                    label: const Text('CÀI ĐẶT LẠI', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF6C63FF).withValues(alpha: 0.8),
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
                   OutlinedButton.icon(
                     onPressed: gameMode == 'Online' ? _resetOnlineGame : _resetGame,
                     icon: const Icon(Icons.refresh, color: Colors.white70),
-                    label: const Text('VÁN MỚI', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+                    label: const Text('CHƠI LẠI', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
                     style: OutlinedButton.styleFrom(
-                      backgroundColor: const Color(0xFF0F0C20).withOpacity(0.72),
-                      side: BorderSide(color: Colors.white.withOpacity(0.2)),
-                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                      backgroundColor: const Color(0xFF0F0C20).withValues(alpha: 0.72),
+                      side: BorderSide(color: Colors.white.withValues(alpha: 0.2)),
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                     ),
                   ),
@@ -2066,7 +2430,7 @@ class _CaroGameScreenState extends State<CaroGameScreen>
                       icon: const Icon(Icons.cleaning_services, color: Colors.white),
                       label: const Text('RESET TỈ SỐ', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFFFF2D55).withOpacity(0.28),
+                        backgroundColor: const Color(0xFFFF2D55).withValues(alpha: 0.28),
                         foregroundColor: Colors.white,
                         side: const BorderSide(color: Color(0xFFFF2D55), width: 1.5),
                         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
@@ -2119,7 +2483,7 @@ class RocketPainter extends CustomPainter {
     final trailPaint = Paint()
       ..shader = LinearGradient(
         begin: Alignment.topCenter, end: Alignment.bottomCenter,
-        colors: [primary.withOpacity(0.0), primary.withOpacity(0.7)],
+        colors: [primary.withValues(alpha: 0.0), primary.withValues(alpha: 0.7)],
       ).createShader(Rect.fromLTWH(-6, 10, 12, trailLen));
     final trailPath = Path()
       ..moveTo(-4, 10)
@@ -2129,7 +2493,7 @@ class RocketPainter extends CustomPainter {
     canvas.drawPath(trailPath, trailPaint);
 
     final glowPaint = Paint()
-      ..color = glow.withOpacity(0.35)
+      ..color = glow.withValues(alpha: 0.35)
       ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10);
     final bodyPath = _buildBody();
     canvas.drawPath(bodyPath, glowPaint);
@@ -2141,16 +2505,16 @@ class RocketPainter extends CustomPainter {
       Paint()
         ..shader = LinearGradient(
           begin: Alignment.topLeft, end: Alignment.centerRight,
-          colors: [Colors.white.withOpacity(0.4), Colors.transparent],
+          colors: [Colors.white.withValues(alpha: 0.4), Colors.transparent],
         ).createShader(const Rect.fromLTWH(-6, -22, 14, 36)),
     );
 
-    final wingPaint = Paint()..color = primary.withOpacity(0.85);
+    final wingPaint = Paint()..color = primary.withValues(alpha: 0.85);
     canvas.drawPath(_buildWingL(), wingPaint);
     canvas.drawPath(_buildWingR(), wingPaint);
 
     final nosePaint = Paint()
-      ..color = Colors.white.withOpacity(0.7)
+      ..color = Colors.white.withValues(alpha: 0.7)
       ..style = PaintingStyle.fill;
     final nosePath = Path()
       ..moveTo(0, -22)
@@ -2161,7 +2525,7 @@ class RocketPainter extends CustomPainter {
 
     final ts = TextStyle(
         color: Colors.white, fontSize: 8, fontWeight: FontWeight.w900,
-        shadows: [Shadow(color: Colors.black.withOpacity(0.6), blurRadius: 3)]);
+        shadows: [Shadow(color: Colors.black.withValues(alpha: 0.6), blurRadius: 3)]);
     final tp = TextPainter(text: TextSpan(text: player, style: ts), textDirection: TextDirection.ltr);
     tp.layout();
     tp.paint(canvas, Offset(-tp.width / 2, -5));
@@ -2222,18 +2586,18 @@ class BombParticlePainter extends CustomPainter {
   void _drawFire(Canvas canvas, BParticle p) {
     final a = p.alpha;
     canvas.drawCircle(p.position, p.size * 1.4,
-      Paint()..color = p.color.withOpacity(a * 0.3)..maskFilter = MaskFilter.blur(BlurStyle.normal, p.size));
-    final innerColor = Color.lerp(Colors.white, p.color, 0.4)!.withOpacity(a);
+      Paint()..color = p.color.withValues(alpha: a * 0.3)..maskFilter = MaskFilter.blur(BlurStyle.normal, p.size));
+    final innerColor = Color.lerp(Colors.white, p.color, 0.4)!.withValues(alpha: a);
     canvas.drawCircle(p.position, p.size,
       Paint()..shader = RadialGradient(
-        colors: [innerColor, p.color.withOpacity(a * 0.8), p.color.withOpacity(0)],
+        colors: [innerColor, p.color.withValues(alpha: a * 0.8), p.color.withValues(alpha: 0)],
         stops: const [0.0, 0.5, 1.0],
       ).createShader(Rect.fromCircle(center: p.position, radius: p.size)));
   }
 
   void _drawSmoke(Canvas canvas, BParticle p) {
     canvas.drawCircle(p.position, p.size,
-      Paint()..color = p.color.withOpacity(p.alpha * 0.45)..maskFilter = MaskFilter.blur(BlurStyle.normal, p.size * 0.6));
+      Paint()..color = p.color.withValues(alpha: p.alpha * 0.45)..maskFilter = MaskFilter.blur(BlurStyle.normal, p.size * 0.6));
   }
 
   void _drawDebris(Canvas canvas, BParticle p) {
@@ -2247,15 +2611,15 @@ class BombParticlePainter extends CustomPainter {
         ..lineTo(p.size * 0.8, p.size * 0.6)
         ..lineTo(-p.size * 0.8, p.size * 0.6)
         ..close();
-      canvas.drawPath(path, Paint()..color = p.color.withOpacity(a)..style = PaintingStyle.fill);
+      canvas.drawPath(path, Paint()..color = p.color.withValues(alpha: a)..style = PaintingStyle.fill);
     } else {
       canvas.drawRect(
         Rect.fromCenter(center: Offset.zero, width: p.size * 1.4, height: p.size * 0.6),
-        Paint()..color = p.color.withOpacity(a),
+        Paint()..color = p.color.withValues(alpha: a),
       );
     }
     canvas.drawCircle(Offset.zero, p.size * 0.6,
-        Paint()..color = p.color.withOpacity(a * 0.3)..maskFilter = MaskFilter.blur(BlurStyle.normal, 3));
+        Paint()..color = p.color.withValues(alpha: a * 0.3)..maskFilter = MaskFilter.blur(BlurStyle.normal, 3));
     canvas.restore();
   }
 
@@ -2267,7 +2631,7 @@ class BombParticlePainter extends CustomPainter {
       ..strokeWidth = p.size
       ..strokeCap = StrokeCap.round
       ..shader = LinearGradient(
-        colors: [p.color.withOpacity(0), p.color.withOpacity(p.alpha)],
+        colors: [p.color.withValues(alpha: 0), p.color.withValues(alpha: p.alpha)],
       ).createShader(Rect.fromPoints(tail, p.position)));
   }
 
@@ -2290,17 +2654,17 @@ class ShockwavePainter extends CustomPainter {
       final a = alphas[i];
       if (r <= 0 || a <= 0) continue;
       canvas.drawCircle(center, r, Paint()
-        ..color = color.withOpacity(a * 0.2)
+        ..color = color.withValues(alpha: a * 0.2)
         ..style = PaintingStyle.stroke
         ..strokeWidth = 20
         ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 15));
       canvas.drawCircle(center, r, Paint()
-        ..color = color.withOpacity(a * 0.85)
+        ..color = color.withValues(alpha: a * 0.85)
         ..style = PaintingStyle.stroke
         ..strokeWidth = 2.5);
       if (i == 0 && a > 0.6) {
         canvas.drawCircle(center, r * 0.3, Paint()
-          ..color = Colors.white.withOpacity((a - 0.6) * 2 * 0.15)
+          ..color = Colors.white.withValues(alpha: (a - 0.6) * 2 * 0.15)
           ..style = PaintingStyle.fill);
       }
     }
@@ -2354,10 +2718,14 @@ class _CaroCellState extends State<CaroCell> with SingleTickerProviderStateMixin
   @override
   Widget build(BuildContext context) {
     final pc = widget.currentPlayer == 'X' ? const Color(0xFF00E5FF) : const Color(0xFFFF2D55);
-    Color cellBg = Colors.white.withOpacity(0.03);
-    if (widget.isWinning) cellBg = const Color(0xFF4CAF50).withOpacity(0.25);
-    else if (widget.isLastMove) cellBg = const Color(0xFFFFC107).withOpacity(0.15);
-    else if (_hovered && widget.value.isEmpty) cellBg = pc.withOpacity(0.08);
+    Color cellBg = Colors.white.withValues(alpha: 0.03);
+    if (widget.isWinning) {
+      cellBg = const Color(0xFF4CAF50).withValues(alpha: 0.25);
+    } else if (widget.isLastMove) {
+      cellBg = const Color(0xFFFFC107).withValues(alpha: 0.15);
+    } else if (_hovered && widget.value.isEmpty) {
+      cellBg = pc.withValues(alpha: 0.08);
+    }
 
     final interactive = widget.value.isEmpty && !widget.isWinning && !widget.isPending;
 
@@ -2372,19 +2740,25 @@ class _CaroCellState extends State<CaroCell> with SingleTickerProviderStateMixin
           width: widget.cellSize - 4, height: widget.cellSize - 4,
           margin: const EdgeInsets.all(2),
           transformAlignment: Alignment.center,
-          transform: Matrix4.identity()..scale(_hovered && interactive ? 1.07 : 1.0),
+          transform: Matrix4.identity()
+            ..scaleByDouble(
+              _hovered && interactive ? 1.07 : 1.0,
+              _hovered && interactive ? 1.07 : 1.0,
+              1.0,
+              1.0,
+            ),
           decoration: BoxDecoration(
             color: cellBg,
             borderRadius: BorderRadius.circular(6),
             border: Border.all(
-              color: widget.isWinning ? const Color(0xFF4CAF50).withOpacity(0.9)
-                  : widget.isLastMove ? const Color(0xFFFFC107).withOpacity(0.7)
-                  : _hovered && interactive ? pc.withOpacity(0.5)
-                  : Colors.white.withOpacity(0.12),
+              color: widget.isWinning ? const Color(0xFF4CAF50).withValues(alpha: 0.9)
+                  : widget.isLastMove ? const Color(0xFFFFC107).withValues(alpha: 0.7)
+                  : _hovered && interactive ? pc.withValues(alpha: 0.5)
+                  : Colors.white.withValues(alpha: 0.12),
               width: widget.isWinning || widget.isLastMove || _hovered ? 1.5 : 1.0,
             ),
             boxShadow: _hovered && interactive
-                ? [BoxShadow(color: pc.withOpacity(0.2), blurRadius: 8, spreadRadius: 1)]
+                ? [BoxShadow(color: pc.withValues(alpha: 0.2), blurRadius: 8, spreadRadius: 1)]
                 : null,
           ),
           alignment: Alignment.center,
@@ -2399,7 +2773,7 @@ class _CaroCellState extends State<CaroCell> with SingleTickerProviderStateMixin
               : _hovered && interactive && _pulseAnim != null
                   ? AnimatedBuilder(
                       animation: _pulseAnim!,
-                      builder: (_, __) => CustomPaint(
+                      builder: (_, _) => CustomPaint(
                         size: Size(widget.cellSize - 8, widget.cellSize - 8),
                         painter: CrosshairPainter(color: pc, opacity: _pulseAnim!.value),
                       ),
@@ -2441,13 +2815,13 @@ class CrosshairPainter extends CustomPainter {
     final cLen = r * 0.28;
 
     Paint linePaint(double strokeW) => Paint()
-      ..color = color.withOpacity(opacity)
+      ..color = color.withValues(alpha: opacity)
       ..strokeWidth = strokeW
       ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.round;
 
     Paint glowPaint(double strokeW) => Paint()
-      ..color = color.withOpacity(opacity * 0.25)
+      ..color = color.withValues(alpha: opacity * 0.25)
       ..strokeWidth = strokeW + 3
       ..style = PaintingStyle.stroke
       ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4);
@@ -2482,3 +2856,172 @@ class CrosshairPainter extends CustomPainter {
   @override
   bool shouldRepaint(CrosshairPainter old) => old.opacity != opacity;
 }
+
+// ════════════════════════════════════════════════════════════
+//  OPTIMIZED ANIMATION OVERLAYS (TỐI ƯU HIỆU NĂNG)
+// ════════════════════════════════════════════════════════════
+
+// Widget quản lý và tự cập nhật các hạt nổ độc lập, tránh rebuild bàn cờ
+class ParticlesOverlay extends StatefulWidget {
+  final AnimationController controller;
+  final List<BParticle> particles;
+  final bool isBoardExplosion;
+
+  const ParticlesOverlay({
+    super.key,
+    required this.controller,
+    required this.particles,
+    this.isBoardExplosion = false,
+  });
+
+  @override
+  State<ParticlesOverlay> createState() => _ParticlesOverlayState();
+}
+
+class _ParticlesOverlayState extends State<ParticlesOverlay> {
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.addListener(_updateParticles);
+  }
+
+  @override
+  void didUpdateWidget(ParticlesOverlay oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller) {
+      oldWidget.controller.removeListener(_updateParticles);
+      widget.controller.addListener(_updateParticles);
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(_updateParticles);
+    super.dispose();
+  }
+
+  // Cập nhật vị trí và thuộc tính hạt theo thời gian thực (mỗi frame)
+  void _updateParticles() {
+    if (!mounted) return;
+    const dt = 0.016; // Giả lập thời gian delta mỗi frame 60fps
+    if (widget.isBoardExplosion) {
+      for (final p in widget.particles) {
+        if (p.life <= 0) continue;
+        p.position += p.velocity * dt;
+        p.velocity = Offset(p.velocity.dx * 0.98, p.velocity.dy * 0.98);
+        if (p.type == BParticleType.debris || p.type == BParticleType.spark) {
+          p.velocity = Offset(p.velocity.dx, p.velocity.dy + 80 * dt);
+        }
+        if (p.type == BParticleType.smoke) {
+          p.size = (p.size + dt * 12).clamp(0, 80);
+          p.velocity = Offset(p.velocity.dx, p.velocity.dy - 8 * dt);
+        }
+        p.life -= p.maxLife / (1.4 / dt);
+        p.rotation += p.rotSpeed * dt;
+      }
+    } else {
+      for (final p in widget.particles) {
+        if (p.life <= 0) continue;
+        p.position += p.velocity * dt;
+        p.velocity = Offset(p.velocity.dx * 0.97, p.velocity.dy * 0.97);
+        if (p.type == BParticleType.debris || p.type == BParticleType.spark) {
+          p.velocity = Offset(p.velocity.dx, p.velocity.dy + 120 * dt);
+        }
+        if (p.type == BParticleType.smoke) {
+          p.size = (p.size + dt * 8).clamp(0, 60);
+          p.velocity = Offset(p.velocity.dx, p.velocity.dy - 5 * dt);
+        }
+        p.life -= p.maxLife / (0.8 / dt);
+        p.rotation += p.rotSpeed * dt;
+      }
+    }
+    setState(() {}); // Chỉ rebuild nội bộ widget nổ hạt
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.particles.isEmpty) return const SizedBox.shrink();
+    return CustomPaint(
+      painter: BombParticlePainter(widget.particles),
+    );
+  }
+}
+
+// Widget quản lý hiệu ứng vòng loang chấn độc lập khi thắng cuộc
+class ShockwaveOverlay extends StatelessWidget {
+  final Animation<double> animation;
+  final String winner;
+  final double boardWidth;
+  final double boardHeight;
+
+  const ShockwaveOverlay({
+    super.key,
+    required this.animation,
+    required this.winner,
+    required this.boardWidth,
+    required this.boardHeight,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: animation,
+      builder: (context, _) {
+        final t = animation.value;
+        final maxRadius = max(boardWidth, boardHeight) * 0.85;
+        final radii = <double>[];
+        final alphas = <double>[];
+        
+        // Tính toán bán kính và độ mờ của 3 vòng loang
+        for (int i = 0; i < 3; i++) {
+          final delay = i * 0.15;
+          final localT = ((t - delay) / (1 - delay)).clamp(0.0, 1.0);
+          radii.add(localT * maxRadius);
+          alphas.add((1.0 - localT) * (i == 0 ? 0.9 : i == 1 ? 0.6 : 0.35));
+        }
+
+        return CustomPaint(
+          painter: ShockwavePainter(
+            center: Offset(boardWidth / 2, boardHeight / 2),
+            radii: radii,
+            alphas: alphas,
+            color: winner == 'X' ? const Color(0xFF00E5FF) : const Color(0xFFFF2D55),
+          ),
+        );
+      },
+    );
+  }
+}
+
+// Widget quản lý chuyển động tên lửa bay độc lập, tránh rebuild bàn cờ
+class RocketOverlay extends StatelessWidget {
+  final RocketData? rocket;
+  final Animation<double>? animation;
+
+  const RocketOverlay({
+    super.key,
+    this.rocket,
+    this.animation,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (rocket == null || animation == null) return const SizedBox.shrink();
+    return AnimatedBuilder(
+      animation: animation!,
+      builder: (context, _) {
+        final t = animation!.value;
+        final pos = Offset.lerp(rocket!.start, rocket!.end, t)!;
+        return CustomPaint(
+          painter: RocketPainter(
+            position: pos,
+            angle: rocket!.angle,
+            player: rocket!.player,
+            progress: t,
+          ),
+        );
+      },
+    );
+  }
+}
+
