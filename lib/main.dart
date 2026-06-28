@@ -4,7 +4,6 @@ import 'dart:math';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
-import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 const String _supabaseUrl = 'https://xtzuepyhocsyhuhcqucu.supabase.co';
@@ -398,6 +397,9 @@ class _CaroGameScreenState extends State<CaroGameScreen>
     with TickerProviderStateMixin {
   int boardSize = 20;
   static const double _cellSize = 44.0;
+  static const double _minBoardScale = 0.3;
+  static const double _maxBoardScale = 2.5;
+  static const double _boardEdgePadding = 48.0;
 
   late List<List<String>> board;
   late String currentPlayer;
@@ -576,45 +578,94 @@ class _CaroGameScreenState extends State<CaroGameScreen>
     await supabase.auth.signOut();
   }
 
-  // ── Zoom / pan ──────────────────────────────────────────────────────────
+  // Zoom / pan
+  double get _boardPixelWidth => boardSize * _cellSize;
+  double get _boardPixelHeight => boardSize * _cellSize;
+
   Offset _cellCenter(int r, int c) =>
       Offset(c * _cellSize + _cellSize / 2, r * _cellSize + _cellSize / 2);
 
+  double _fitBoardScale() {
+    if (_vpW <= 0 || _vpH <= 0) return 1.0;
+
+    final availableW = max(1.0, _vpW - _boardEdgePadding * 2);
+    final availableH = max(1.0, _vpH - _boardEdgePadding * 2);
+    final fit = min(availableW / _boardPixelWidth, availableH / _boardPixelHeight);
+    return fit.clamp(_minBoardScale, _maxBoardScale).toDouble();
+  }
+
+  Matrix4 _boardMatrix(double scale, double tx, double ty) {
+    return Matrix4.identity()
+      ..translateByDouble(tx, ty, 0.0, 1.0)
+      ..scaleByDouble(scale, scale, 1.0, 1.0);
+  }
+
+  Matrix4 _constrainBoardMatrix(Matrix4 matrix) {
+    if (_vpW <= 0 || _vpH <= 0) return matrix;
+
+    final scale = matrix
+        .getMaxScaleOnAxis()
+        .clamp(_minBoardScale, _maxBoardScale)
+        .toDouble();
+    final scaledW = _boardPixelWidth * scale;
+    final scaledH = _boardPixelHeight * scale;
+    final tx = matrix.storage[12];
+    final ty = matrix.storage[13];
+
+    final nextTx = scaledW <= _vpW
+        ? (_vpW - scaledW) / 2
+        : tx.clamp(_vpW - scaledW - _boardEdgePadding, _boardEdgePadding).toDouble();
+    final nextTy = scaledH <= _vpH
+        ? (_vpH - scaledH) / 2
+        : ty.clamp(_vpH - scaledH - _boardEdgePadding, _boardEdgePadding).toDouble();
+
+    return _boardMatrix(scale, nextTx, nextTy);
+  }
+
   void _zoom(double factor, [Offset? focalPoint]) {
+    if (_vpW <= 0 || _vpH <= 0) return;
+
     final m = _tvController.value;
-    final s = m.getMaxScaleOnAxis();
-    final ns = (s * factor).clamp(0.3, 2.5);
-    if ((ns - s).abs() < 0.001) return;
-    final realFactor = ns / s; // tỉ lệ thực tế (có thể khác factor nếu clamp)
-    final tx = m.storage[12], ty = m.storage[13];
+    final currentScale = m.getMaxScaleOnAxis();
+    final nextScale = (currentScale * factor)
+        .clamp(_minBoardScale, _maxBoardScale)
+        .toDouble();
+    if ((nextScale - currentScale).abs() < 0.001) return;
+
+    final realFactor = nextScale / currentScale;
+    final tx = m.storage[12];
+    final ty = m.storage[13];
     final cx = focalPoint?.dx ?? _vpW / 2;
     final cy = focalPoint?.dy ?? _vpH / 2;
-    _tvController.value = Matrix4.identity()
-      ..translateByDouble(
+
+    _tvController.value = _constrainBoardMatrix(
+      _boardMatrix(
+        nextScale,
         cx * (1 - realFactor) + tx * realFactor,
         cy * (1 - realFactor) + ty * realFactor,
-        0.0, 1.0,
-      )
-      ..scaleByDouble(ns, ns, 1.0, 1.0);
+      ),
+    );
   }
 
   void _resetZoom() {
-    if (_vpW > 0 && _vpH > 0) {
-      final bw = boardSize * _cellSize;
-      _tvController.value = Matrix4.translationValues((_vpW - bw) / 2, (_vpH - bw) / 2, 0);
-    }
+    if (_vpW <= 0 || _vpH <= 0) return;
+
+    final scale = _fitBoardScale();
+    _tvController.value = _boardMatrix(
+      scale,
+      (_vpW - _boardPixelWidth * scale) / 2,
+      (_vpH - _boardPixelHeight * scale) / 2,
+    );
   }
 
   void _handleScroll(PointerScrollEvent e) {
-    // Scroll = zoom tại con trỏ chuột
-    if (e.scrollDelta.dy < 0) {
-      _zoom(1.04, e.localPosition);
-    } else if (e.scrollDelta.dy > 0) {
-      _zoom(1 / 1.04, e.localPosition);
-    }
+    final dy = e.scrollDelta.dy.clamp(-120.0, 120.0).toDouble();
+    if (dy.abs() < 0.01) return;
+
+    _zoom(pow(1.001, -dy).toDouble(), e.localPosition);
   }
 
-  // ── Rocket launching ───────────────────────────────────────────────────
+  // Rocket launching ───────────────────────────────────────────────────
   void _launchRocket(int r, int c, String player) {
     final inv = Matrix4.inverted(_tvController.value);
     final tl = MatrixUtils.transformPoint(inv, Offset.zero);
@@ -2139,9 +2190,12 @@ class _CaroGameScreenState extends State<CaroGameScreen>
                             child: InteractiveViewer(
                               transformationController: _tvController,
                               boundaryMargin: const EdgeInsets.all(double.infinity),
-                              minScale: 0.3, maxScale: 2.5,
+                              minScale: _minBoardScale, maxScale: _maxBoardScale,
                               panEnabled: true,
                               scaleEnabled: true,
+                              onInteractionEnd: (_) {
+                                _tvController.value = _constrainBoardMatrix(_tvController.value);
+                              },
                               constrained: false,
                               child: SizedBox(
                                 width: boardSize * _cellSize,
