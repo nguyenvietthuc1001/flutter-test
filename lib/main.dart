@@ -606,21 +606,11 @@ class _CaroGameScreenState extends State<CaroGameScreen>
   }
 
   void _handleScroll(PointerScrollEvent e) {
-    // Ctrl+Scroll = zoom tại con trỏ chuột, Scroll thường = pan
-    final isCtrlHeld = HardwareKeyboard.instance.logicalKeysPressed
-        .any((k) => k == LogicalKeyboardKey.controlLeft || k == LogicalKeyboardKey.controlRight);
-    if (isCtrlHeld) {
-      // Zoom chậm & mượt, tâm zoom tại vị trí con trỏ chuột
-      if (e.scrollDelta.dy < 0) {
-        _zoom(1.07, e.localPosition);
-      } else if (e.scrollDelta.dy > 0) {
-        _zoom(1 / 1.07, e.localPosition);
-      }
-    } else {
-      final m = _tvController.value;
-      _tvController.value = m * Matrix4.translationValues(
-        -e.scrollDelta.dx / m.getMaxScaleOnAxis(),
-        -e.scrollDelta.dy / m.getMaxScaleOnAxis(), 0);
+    // Scroll = zoom tại con trỏ chuột
+    if (e.scrollDelta.dy < 0) {
+      _zoom(1.04, e.localPosition);
+    } else if (e.scrollDelta.dy > 0) {
+      _zoom(1 / 1.04, e.localPosition);
     }
   }
 
@@ -2366,11 +2356,6 @@ class _CaroGameScreenState extends State<CaroGameScreen>
               right: 8,
               bottom: 8,
               child: Column(mainAxisSize: MainAxisSize.min, children: [
-                Text(
-                  'Scroll: kéo bàn cờ  •  Ctrl+Scroll: thu phóng  •  Chạm 2 ngón: phóng to/thu nhỏ',
-                  style: TextStyle(fontSize: 11, color: Colors.white.withValues(alpha: 0.45), fontStyle: FontStyle.italic),
-                ),
-                const SizedBox(height: 8),
                 Row(mainAxisAlignment: MainAxisAlignment.center, children: [
                   ElevatedButton.icon(
                     onPressed: () {
