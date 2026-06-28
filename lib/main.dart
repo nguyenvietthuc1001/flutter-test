@@ -3081,7 +3081,62 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   Future<void> _updatePassword() async {
-    setState(() => _isLoading = !_isLoading);
+    if (!_formKey.currentState!.validate()) return;
+
+    setState(() => _isLoading = true);
+    try {
+      // 1. Xác thực lại bằng mật khẩu hiện tại
+      await supabase.auth.signInWithPassword(
+        email: widget.userEmail,
+        password: _currentPasswordController.text.trim(),
+      );
+
+      // 2. Nếu đăng nhập thành công, cập nhật mật khẩu mới
+      await supabase.auth.updateUser(
+        UserAttributes(password: _newPasswordController.text.trim()),
+      );
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Đổi mật khẩu thành công!'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+
+      // Quay lại màn hình trước đó sau 1.5 giây
+      await Future.delayed(const Duration(milliseconds: 1500));
+      if (mounted) {
+        Navigator.pop(context);
+      }
+    } on AuthException catch (e) {
+      if (mounted) {
+        String errorMsg = e.message;
+        if (e.message.contains('Invalid login credentials')) {
+          errorMsg = 'Mật khẩu hiện tại không chính xác.';
+        }
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(errorMsg),
+            backgroundColor: Colors.redAccent,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Đã xảy ra lỗi: ${e.toString()}'),
+            backgroundColor: Colors.redAccent,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
+    }
   }
 
   @override
