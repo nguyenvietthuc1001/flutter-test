@@ -4,6 +4,7 @@ import 'dart:math';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
+import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 const String _supabaseUrl = 'https://xtzuepyhocsyhuhcqucu.supabase.co';
@@ -462,7 +463,6 @@ class _CaroGameScreenState extends State<CaroGameScreen>
   // UI controllers for online mode
   final TextEditingController _nicknameCtrl = TextEditingController();
   final TextEditingController _roomCodeCtrl = TextEditingController();
-  bool _showOnlinePanel = false;
 
   @override
   void initState() {
@@ -587,26 +587,36 @@ class _CaroGameScreenState extends State<CaroGameScreen>
     if (ns == s) return;
     final tx = m.storage[12], ty = m.storage[13];
     final cx = _vpW / 2, cy = _vpH / 2;
-    setState(() {
-      _tvController.value = Matrix4.identity()
-        ..translateByDouble(cx * (1 - factor) + tx * factor, cy * (1 - factor) + ty * factor, 0.0, 1.0)
-        ..scaleByDouble(ns, ns, 1.0, 1.0);
-    });
+    _tvController.value = Matrix4.identity()
+      ..translateByDouble(cx * (1 - factor) + tx * factor, cy * (1 - factor) + ty * factor, 0.0, 1.0)
+      ..scaleByDouble(ns, ns, 1.0, 1.0);
   }
 
-  void _resetZoom() => setState(() {
+  void _resetZoom() {
     if (_vpW > 0 && _vpH > 0) {
       final bw = boardSize * _cellSize;
       _tvController.value = Matrix4.translationValues((_vpW - bw) / 2, (_vpH - bw) / 2, 0);
     }
-  });
+  }
 
-  void _handleScroll(PointerScrollEvent e) => setState(() {
-    final m = _tvController.value;
-    _tvController.value = m * Matrix4.translationValues(
-      -e.scrollDelta.dx / m.getMaxScaleOnAxis(),
-      -e.scrollDelta.dy / m.getMaxScaleOnAxis(), 0);
-  });
+  void _handleScroll(PointerScrollEvent e) {
+    // Ctrl+Scroll = zoom, Scroll thường = pan
+    final isCtrlHeld = HardwareKeyboard.instance.logicalKeysPressed
+        .any((k) => k == LogicalKeyboardKey.controlLeft || k == LogicalKeyboardKey.controlRight);
+    if (isCtrlHeld) {
+      // Zoom in/out dựa trên hướng scroll
+      if (e.scrollDelta.dy < 0) {
+        _zoom(1.15);
+      } else if (e.scrollDelta.dy > 0) {
+        _zoom(1 / 1.15);
+      }
+    } else {
+      final m = _tvController.value;
+      _tvController.value = m * Matrix4.translationValues(
+        -e.scrollDelta.dx / m.getMaxScaleOnAxis(),
+        -e.scrollDelta.dy / m.getMaxScaleOnAxis(), 0);
+    }
+  }
 
   // ── Rocket launching ───────────────────────────────────────────────────
   void _launchRocket(int r, int c, String player) {
@@ -1061,7 +1071,6 @@ class _CaroGameScreenState extends State<CaroGameScreen>
         _opponentNickname = '';
         _isOnlineWaiting = true;
         _isOnlineConnecting = false;
-        _showOnlinePanel = false;
         gameMode = 'Online';
         isGameStarted = true;
         _initGame();
@@ -1129,7 +1138,6 @@ class _CaroGameScreenState extends State<CaroGameScreen>
         _opponentNickname = oppName;
         _isOnlineWaiting = false;
         _isOnlineConnecting = false;
-        _showOnlinePanel = false;
         gameMode = 'Online';
         isGameStarted = true;
         _initGame();
@@ -1333,7 +1341,7 @@ class _CaroGameScreenState extends State<CaroGameScreen>
     _leaveOnlineMatch();
     setState(() {
       gameMode = 'PvP';
-      _showOnlinePanel = false;
+      isGameStarted = false;
       _initGame();
     });
   }
@@ -1469,10 +1477,6 @@ class _CaroGameScreenState extends State<CaroGameScreen>
     return GestureDetector(
       onTap: () {
         if (gameMode == mode) return;
-        if (mode == 'Online') {
-          setState(() { _showOnlinePanel = true; });
-          return;
-        }
         if (gameMode == 'Online') _leaveOnlineMatch();
         setState(() { gameMode = mode; _resetGame(); });
       },
@@ -1480,10 +1484,10 @@ class _CaroGameScreenState extends State<CaroGameScreen>
         duration: const Duration(milliseconds: 200),
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
         decoration: BoxDecoration(
-          color: sel ? (mode == 'Online' ? const Color(0xFF00C896).withValues(alpha: 0.2) : const Color(0xFF6C63FF).withValues(alpha: 0.2)) : Colors.transparent,
+          color: sel ? const Color(0xFF6C63FF).withValues(alpha: 0.2) : Colors.transparent,
           borderRadius: BorderRadius.circular(10),
           border: Border.all(
-            color: sel ? (mode == 'Online' ? const Color(0xFF00C896) : const Color(0xFF6C63FF)) : Colors.white.withValues(alpha: 0.1),
+            color: sel ? const Color(0xFF6C63FF) : Colors.white.withValues(alpha: 0.1),
             width: 1.2,
           ),
         ),
@@ -1544,171 +1548,135 @@ class _CaroGameScreenState extends State<CaroGameScreen>
     );
   }
 
-  // ── Online Panel ──────────────────────────────────────────────────────
-  Widget _buildOnlinePanel() {
-    return Center(
-      child: BackdropFilter(
-        filter: ui.ImageFilter.blur(sigmaX: 12, sigmaY: 12),
-        child: Container(
-          margin: const EdgeInsets.all(20),
-          padding: const EdgeInsets.all(28),
-          constraints: const BoxConstraints(maxWidth: 420),
-          decoration: BoxDecoration(
-            color: const Color(0xFF0F0C24).withValues(alpha: 0.95),
-            borderRadius: BorderRadius.circular(24),
-            border: Border.all(color: const Color(0xFF00C896).withValues(alpha: 0.4), width: 1.5),
-            boxShadow: [
-              BoxShadow(color: const Color(0xFF00C896).withValues(alpha: 0.1), blurRadius: 30, spreadRadius: 2),
-              BoxShadow(color: Colors.black.withValues(alpha: 0.6), blurRadius: 20),
-            ],
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(children: [
-                const Icon(Icons.wifi, color: Color(0xFF00C896), size: 22),
-                const SizedBox(width: 10),
-                const Text('CHƠI ONLINE', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900, color: Colors.white, letterSpacing: 2)),
-                const Spacer(),
-                GestureDetector(
-                  onTap: () => setState(() => _showOnlinePanel = false),
-                  child: Container(
-                    padding: const EdgeInsets.all(6),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.05),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: const Icon(Icons.close, color: Colors.white54, size: 18),
-                  ),
-                ),
-              ]),
-              const SizedBox(height: 24),
-              const Text('Tên của bạn', style: TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 8),
-              TextField(
-                controller: _nicknameCtrl,
-                style: const TextStyle(color: Colors.white),
-                decoration: InputDecoration(
-                  hintText: 'Nhập tên hiển thị...',
-                  hintStyle: TextStyle(color: Colors.white.withValues(alpha: 0.3)),
-                  filled: true,
-                  fillColor: Colors.white.withValues(alpha: 0.06),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.1)),
-                  ),
-                  enabledBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.1)),
-                  ),
-                  focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: const BorderSide(color: Color(0xFF00C896), width: 1.5),
-                  ),
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                  prefixIcon: const Icon(Icons.person, color: Color(0xFF00C896), size: 18),
-                ),
-              ),
-              const SizedBox(height: 20),
-              Text(
-                'Tạo phòng: bạn nhận quân cờ đã chọn ở Cài đặt. Vào phòng: bạn nhận quân cờ còn lại.',
-                style: TextStyle(color: Colors.white.withValues(alpha: 0.58), fontSize: 12, height: 1.35),
-              ),
-              const SizedBox(height: 12),
-
-              // Create Room button
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton.icon(
-                  onPressed: _isOnlineConnecting ? null : _createRoom,
-                  icon: _isOnlineConnecting
-                    ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                    : const Icon(Icons.add_circle_outline, color: Colors.white),
-                  label: const Text('TẠO PHÒNG MỚI', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF00C896),
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  ),
-                ),
-              ),
-
-              const SizedBox(height: 16),
-              Row(children: [
-                Expanded(child: Divider(color: Colors.white.withValues(alpha: 0.1))),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                  child: Text('hoặc', style: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 12)),
-                ),
-                Expanded(child: Divider(color: Colors.white.withValues(alpha: 0.1))),
-              ]),
-              const SizedBox(height: 16),
-
-              // Join room
-              const Text('Mã phòng', style: TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 8),
-              Row(children: [
-                Expanded(
-                  child: TextField(
-                    controller: _roomCodeCtrl,
-                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, letterSpacing: 3, fontSize: 16),
-                    textCapitalization: TextCapitalization.characters,
-                    decoration: InputDecoration(
-                      hintText: 'XXXXXX',
-                      hintStyle: TextStyle(color: Colors.white.withValues(alpha: 0.2), letterSpacing: 3),
-                      filled: true,
-                      fillColor: Colors.white.withValues(alpha: 0.06),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.1)),
-                      ),
-                      enabledBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.1)),
-                      ),
-                      focusedBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: const BorderSide(color: Color(0xFF6C63FF), width: 1.5),
-                      ),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                ElevatedButton(
-                  onPressed: _isOnlineConnecting ? null : _joinRoom,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF6C63FF),
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  ),
-                  child: _isOnlineConnecting
-                    ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                    : const Text('VÀO', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                ),
-              ]),
-
-              if (_onlineError.isNotEmpty) ...[
-                const SizedBox(height: 12),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFFF2D55).withValues(alpha: 0.1),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: const Color(0xFFFF2D55).withValues(alpha: 0.3)),
-                  ),
-                  child: Row(children: [
-                    const Icon(Icons.error_outline, color: Color(0xFFFF2D55), size: 16),
-                    const SizedBox(width: 8),
-                    Expanded(child: Text(_onlineError, style: const TextStyle(color: Color(0xFFFF2D55), fontSize: 12))),
-                  ]),
-                ),
-              ],
-            ],
+  // ── Online Panel (inline in setup screen) ─────────────────────────────
+  Widget _buildOnlineSetupSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildSectionTitle('TẠO / THAM GIA PHÒNG'),
+        const SizedBox(height: 10),
+        const Text('Tên của bạn', style: TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 8),
+        TextField(
+          controller: _nicknameCtrl,
+          style: const TextStyle(color: Colors.white),
+          decoration: InputDecoration(
+            hintText: 'Nhập tên hiển thị...',
+            hintStyle: TextStyle(color: Colors.white.withValues(alpha: 0.3)),
+            filled: true,
+            fillColor: Colors.white.withValues(alpha: 0.06),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.1)),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.1)),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: const BorderSide(color: Color(0xFF00C896), width: 1.5),
+            ),
+            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+            prefixIcon: const Icon(Icons.person, color: Color(0xFF00C896), size: 18),
           ),
         ),
-      ),
+        const SizedBox(height: 14),
+        Text(
+          'Tạo phòng: bạn nhận quân cờ đã chọn ở trên. Vào phòng: bạn nhận quân cờ còn lại.',
+          style: TextStyle(color: Colors.white.withValues(alpha: 0.58), fontSize: 12, height: 1.35),
+        ),
+        const SizedBox(height: 12),
+
+        // Create Room button
+        SizedBox(
+          width: double.infinity,
+          child: ElevatedButton.icon(
+            onPressed: _isOnlineConnecting ? null : _createRoom,
+            icon: _isOnlineConnecting
+              ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+              : const Icon(Icons.add_circle_outline, color: Colors.white),
+            label: const Text('TẠO PHÒNG MỚI', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF00C896),
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+          ),
+        ),
+
+        const SizedBox(height: 16),
+        Row(children: [
+          Expanded(child: Divider(color: Colors.white.withValues(alpha: 0.1))),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            child: Text('hoặc', style: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 12)),
+          ),
+          Expanded(child: Divider(color: Colors.white.withValues(alpha: 0.1))),
+        ]),
+        const SizedBox(height: 16),
+
+        // Join room
+        const Text('Mã phòng', style: TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 8),
+        Row(children: [
+          Expanded(
+            child: TextField(
+              controller: _roomCodeCtrl,
+              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, letterSpacing: 3, fontSize: 16),
+              textCapitalization: TextCapitalization.characters,
+              decoration: InputDecoration(
+                hintText: 'XXXXXX',
+                hintStyle: TextStyle(color: Colors.white.withValues(alpha: 0.2), letterSpacing: 3),
+                filled: true,
+                fillColor: Colors.white.withValues(alpha: 0.06),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.1)),
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.1)),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(color: Color(0xFF6C63FF), width: 1.5),
+                ),
+                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          ElevatedButton(
+            onPressed: _isOnlineConnecting ? null : _joinRoom,
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF6C63FF),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+            child: _isOnlineConnecting
+              ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+              : const Text('VÀO', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+        ]),
+
+        if (_onlineError.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: const Color(0xFFFF2D55).withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: const Color(0xFFFF2D55).withValues(alpha: 0.3)),
+            ),
+            child: Row(children: [
+              const Icon(Icons.error_outline, color: Color(0xFFFF2D55), size: 16),
+              const SizedBox(width: 8),
+              Expanded(child: Text(_onlineError, style: const TextStyle(color: Color(0xFFFF2D55), fontSize: 12))),
+            ]),
+          ),
+        ],
+      ],
     );
   }
 
@@ -1943,39 +1911,41 @@ class _CaroGameScreenState extends State<CaroGameScreen>
                           const SizedBox(height: 24),
                         ],
 
-                        // Nút hành động Bắt đầu / Mở Online panel
-                        const SizedBox(height: 8),
-                        ElevatedButton(
-                          onPressed: () {
-                            if (gameMode == 'Online') {
-                              setState(() {
-                                _showOnlinePanel = true;
-                              });
-                            } else {
+                        // Online: hiển thị form tạo/tham gia phòng inline
+                        if (gameMode == 'Online') ...[
+                          const SizedBox(height: 8),
+                          _buildOnlineSetupSection(),
+                        ],
+
+                        // Nút bắt đầu cho PvP / PvE
+                        if (gameMode != 'Online') ...[
+                          const SizedBox(height: 8),
+                          ElevatedButton(
+                            onPressed: () {
                               setState(() {
                                 aiSymbol = playerSymbol == 'X' ? 'O' : 'X';
                                 isGameStarted = true;
                                 _initGame();
                               });
-                            }
-                          },
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF6C63FF),
-                            padding: const EdgeInsets.symmetric(vertical: 16),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                            shadowColor: const Color(0xFF6C63FF).withValues(alpha: 0.4),
-                            elevation: 8,
-                          ),
-                          child: Text(
-                            gameMode == 'Online' ? 'MỞ PHÒNG ONLINE' : 'BẮT ĐẦU TRẬN ĐẤU',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 16,
-                              fontWeight: FontWeight.bold,
-                              letterSpacing: 1.5,
+                            },
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFF6C63FF),
+                              padding: const EdgeInsets.symmetric(vertical: 16),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                              shadowColor: const Color(0xFF6C63FF).withValues(alpha: 0.4),
+                              elevation: 8,
+                            ),
+                            child: const Text(
+                              'BẮT ĐẦU TRẬN ĐẤU',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                                letterSpacing: 1.5,
+                              ),
                             ),
                           ),
-                        ),
+                        ],
                         
                         const SizedBox(height: 16),
                         TextButton.icon(
@@ -2172,9 +2142,10 @@ class _CaroGameScreenState extends State<CaroGameScreen>
                             onPointerSignal: (e) { if (e is PointerScrollEvent) _handleScroll(e); },
                             child: InteractiveViewer(
                               transformationController: _tvController,
-                              boundaryMargin: const EdgeInsets.all(200),
+                              boundaryMargin: const EdgeInsets.all(double.infinity),
                               minScale: 0.3, maxScale: 2.5,
-                              scaleEnabled: false,
+                              panEnabled: false,
+                              scaleEnabled: true,
                               constrained: false,
                               child: SizedBox(
                                 width: boardSize * _cellSize,
@@ -2292,15 +2263,14 @@ class _CaroGameScreenState extends State<CaroGameScreen>
                               style: TextStyle(fontSize: 9, color: Colors.white.withValues(alpha: 0.5), letterSpacing: 1.4)),
                         ]),
                         Container(width: 1, height: 36, color: Colors.white12),
-                        Row(mainAxisSize: MainAxisSize.min, children: [
-                          const Text('Chế độ:', style: TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.bold)),
-                          const SizedBox(width: 8),
-                          _modeBtn('PvP','👥 2 Người'),
-                          const SizedBox(width: 8),
-                          _modeBtn('PvE','🤖 Máy'),
-                          const SizedBox(width: 8),
-                          _modeBtn('Online','🌐 Online'),
-                        ]),
+                        if (gameMode != 'Online')
+                          Row(mainAxisSize: MainAxisSize.min, children: [
+                            const Text('Chế độ:', style: TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.bold)),
+                            const SizedBox(width: 8),
+                            _modeBtn('PvP','👥 2 Người'),
+                            const SizedBox(width: 8),
+                            _modeBtn('PvE','🤖 Máy'),
+                          ]),
                         if (gameMode == 'PvE')
                           Row(mainAxisSize: MainAxisSize.min, children: [
                             const Text('Độ khó:', style: TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.bold)),
@@ -2391,7 +2361,7 @@ class _CaroGameScreenState extends State<CaroGameScreen>
               bottom: 8,
               child: Column(mainAxisSize: MainAxisSize.min, children: [
                 Text(
-                  'Con lăn chuột: kéo bàn cờ  •  Nút bấm: thu phóng',
+                  'Scroll: kéo bàn cờ  •  Ctrl+Scroll: thu phóng  •  Chạm 2 ngón: phóng to/thu nhỏ',
                   style: TextStyle(fontSize: 11, color: Colors.white.withValues(alpha: 0.45), fontStyle: FontStyle.italic),
                 ),
                 const SizedBox(height: 8),
@@ -2442,9 +2412,7 @@ class _CaroGameScreenState extends State<CaroGameScreen>
               ]),
             ),
 
-            // Online panel overlay
-            if (_showOnlinePanel)
-              Positioned.fill(child: _buildOnlinePanel()),
+
 
             // Waiting for opponent banner
             if (gameMode == 'Online' && _isOnlineWaiting)
