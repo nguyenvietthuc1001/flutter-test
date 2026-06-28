@@ -2391,6 +2391,22 @@ class _CaroGameScreenState extends State<CaroGameScreen>
                               iconSize: 18,
                               padding: EdgeInsets.zero,
                               constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                              tooltip: 'Hồ sơ cá nhân',
+                              onPressed: () {
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (context) => ProfileScreen(userEmail: widget.userEmail),
+                                  ),
+                                );
+                              },
+                              icon: const Icon(Icons.manage_accounts, color: Color(0xFF00E5FF)),
+                            ),
+                            IconButton(
+                              visualDensity: VisualDensity.compact,
+                              iconSize: 18,
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
                               tooltip: 'Sign out',
                               onPressed: _signOut,
                               icon: const Icon(Icons.logout, color: Colors.white54),
@@ -3034,6 +3050,24 @@ class RocketOverlay extends StatelessWidget {
           ),
         );
       },
+    );
+  }
+}
+
+class ProfileScreen extends StatefulWidget {
+  final String userEmail;
+  const ProfileScreen({super.key, required this.userEmail});
+
+  @override
+  State<ProfileScreen> createState() => _ProfileScreenState();
+}
+
+class _ProfileScreenState extends State<ProfileScreen> {
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Hồ sơ cá nhân')),
+      body: Center(child: Text('Hồ sơ của: ${widget.userEmail}')),
     );
   }
 }
