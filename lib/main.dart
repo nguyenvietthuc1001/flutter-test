@@ -2144,7 +2144,7 @@ class _CaroGameScreenState extends State<CaroGameScreen>
                               transformationController: _tvController,
                               boundaryMargin: const EdgeInsets.all(double.infinity),
                               minScale: 0.3, maxScale: 2.5,
-                              panEnabled: false,
+                              panEnabled: true,
                               scaleEnabled: true,
                               constrained: false,
                               child: SizedBox(
