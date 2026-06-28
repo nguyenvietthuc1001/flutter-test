@@ -580,15 +580,21 @@ class _CaroGameScreenState extends State<CaroGameScreen>
   Offset _cellCenter(int r, int c) =>
       Offset(c * _cellSize + _cellSize / 2, r * _cellSize + _cellSize / 2);
 
-  void _zoom(double factor) {
+  void _zoom(double factor, [Offset? focalPoint]) {
     final m = _tvController.value;
     final s = m.getMaxScaleOnAxis();
     final ns = (s * factor).clamp(0.3, 2.5);
-    if (ns == s) return;
+    if ((ns - s).abs() < 0.001) return;
+    final realFactor = ns / s; // tỉ lệ thực tế (có thể khác factor nếu clamp)
     final tx = m.storage[12], ty = m.storage[13];
-    final cx = _vpW / 2, cy = _vpH / 2;
+    final cx = focalPoint?.dx ?? _vpW / 2;
+    final cy = focalPoint?.dy ?? _vpH / 2;
     _tvController.value = Matrix4.identity()
-      ..translateByDouble(cx * (1 - factor) + tx * factor, cy * (1 - factor) + ty * factor, 0.0, 1.0)
+      ..translateByDouble(
+        cx * (1 - realFactor) + tx * realFactor,
+        cy * (1 - realFactor) + ty * realFactor,
+        0.0, 1.0,
+      )
       ..scaleByDouble(ns, ns, 1.0, 1.0);
   }
 
@@ -600,15 +606,15 @@ class _CaroGameScreenState extends State<CaroGameScreen>
   }
 
   void _handleScroll(PointerScrollEvent e) {
-    // Ctrl+Scroll = zoom, Scroll thường = pan
+    // Ctrl+Scroll = zoom tại con trỏ chuột, Scroll thường = pan
     final isCtrlHeld = HardwareKeyboard.instance.logicalKeysPressed
         .any((k) => k == LogicalKeyboardKey.controlLeft || k == LogicalKeyboardKey.controlRight);
     if (isCtrlHeld) {
-      // Zoom in/out dựa trên hướng scroll
+      // Zoom chậm & mượt, tâm zoom tại vị trí con trỏ chuột
       if (e.scrollDelta.dy < 0) {
-        _zoom(1.15);
+        _zoom(1.07, e.localPosition);
       } else if (e.scrollDelta.dy > 0) {
-        _zoom(1 / 1.15);
+        _zoom(1 / 1.07, e.localPosition);
       }
     } else {
       final m = _tvController.value;
